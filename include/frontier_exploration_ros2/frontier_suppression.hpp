@@ -130,6 +130,12 @@ public:
     const FrontierLike & frontier,
     int64_t now_ns,
     const std::function<void(const std::string &)> & log_warn = {});
+  // Immediately suppress a frontier area when an external safety signal has already
+  // proven the goal point is blocked.
+  void suppress_region(
+    const FrontierLike & frontier,
+    int64_t now_ns,
+    const std::function<void(const std::string &)> & log_warn = {});
 
   // Begin tracking a frontier goal for no-progress timeout evaluation.
   void start_goal_progress_tracking(int dispatch_id, int64_t now_ns);

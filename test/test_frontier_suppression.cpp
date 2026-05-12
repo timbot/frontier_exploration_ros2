@@ -340,6 +340,70 @@ TEST(FrontierSuppressionCoreTests, AllSuppressedCanDispatchTemporaryReturnToStar
   EXPECT_FALSE(core.return_to_start_completed);
 }
 
+TEST(FrontierSuppressionCoreTests, AllSuppressedCanCompleteExploration)
+{
+  int64_t now_ns = 1'000'000'000;
+  int dispatch_calls = 0;
+  int completion_calls = 0;
+  geometry_msgs::msg::Pose current_pose = make_pose(1.0, 1.0);
+
+  FrontierExplorerCoreParams params;
+  params.frontier_suppression_enabled = true;
+  params.frontier_suppression_attempt_threshold = 1;
+  params.frontier_suppression_startup_grace_period_s = 0.0;
+  params.all_frontiers_suppressed_behavior = "complete";
+  params.return_to_start_on_complete = false;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.wait_for_action_server = [](double) {return true;};
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.on_exploration_complete = [&completion_calls]() {
+      completion_calls += 1;
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+  callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {make_candidate(4.0, 4.0)};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+  core.map = OccupancyGrid2d(map_msg);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.map_generation = 1;
+  core.costmap_generation = 1;
+
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 1);
+
+  core.goal_response_callback(core.current_dispatch_id, nullptr, false, "rejected");
+  current_pose = make_pose(3.0, 3.0);
+  core.try_send_next_goal();
+
+  EXPECT_EQ(dispatch_calls, 1);
+  EXPECT_EQ(completion_calls, 1);
+  EXPECT_TRUE(core.return_to_start_completed);
+}
+
 TEST(FrontierSuppressionCoreTests, TemporaryReturnToStartPreemptsWhenFrontiersBecomeAvailableAgain)
 {
   int64_t now_ns = 1'000'000'000;

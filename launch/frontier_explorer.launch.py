@@ -18,6 +18,7 @@ def _create_frontier_actions(context):
     map_qos_durability = LaunchConfiguration("map_qos_durability")
     map_qos_autodetect_on_startup = LaunchConfiguration("map_qos_autodetect_on_startup")
     map_qos_autodetect_timeout_s = LaunchConfiguration("map_qos_autodetect_timeout_s")
+    costmap_qos_durability = LaunchConfiguration("costmap_qos_durability")
     costmap_qos_reliability = LaunchConfiguration("costmap_qos_reliability")
 
     frontier_overrides: dict[str, Any] = {
@@ -25,6 +26,7 @@ def _create_frontier_actions(context):
         "map_qos_durability": map_qos_durability,
         "map_qos_autodetect_on_startup": map_qos_autodetect_on_startup,
         "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
+        "costmap_qos_durability": costmap_qos_durability,
         "costmap_qos_reliability": costmap_qos_reliability,
     }
     if autostart_value != "":
@@ -102,6 +104,11 @@ def generate_launch_description():
                 "map_qos_autodetect_timeout_s",
                 default_value="2.0",
                 description="Autodetect timeout per attempt in seconds.",
+            ),
+            DeclareLaunchArgument(
+                "costmap_qos_durability",
+                default_value="volatile",
+                description="Costmap durability: transient_local | volatile | system_default.",
             ),
             DeclareLaunchArgument(
                 "costmap_qos_reliability",

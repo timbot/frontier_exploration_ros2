@@ -40,7 +40,7 @@ inline std::string normalize_suppressed_behavior(std::string value)
     value.end(),
     value.begin(),
     [](unsigned char ch) {return static_cast<char>(std::tolower(ch));});
-  if (value == "return_to_start") {
+  if (value == "return_to_start" || value == "complete") {
     return value;
   }
   return "stay";

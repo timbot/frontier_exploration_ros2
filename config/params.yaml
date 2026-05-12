@@ -47,9 +47,11 @@ frontier_explorer:
     map_qos_autodetect_on_startup: false
     map_qos_autodetect_timeout_s: 5.0
 
-    # Costmap QoS profile selection (durability is fixed volatile in code).
+    # Costmap QoS profile selection.
+    costmap_qos_durability: volatile
     costmap_qos_reliability: reliable
     costmap_qos_depth: 10
+    local_costmap_qos_durability: inherit
     local_costmap_qos_reliability: inherit
     local_costmap_qos_depth: -1
 
@@ -110,7 +112,7 @@ frontier_explorer:
     # Use if you are having issues with SLAM or Nav2.
     frontier_suppression_enabled: false
 
-    # Behavior when frontiers exist but all of them are temporarily suppressed: stay or return_to_start. 
+    # Behavior when frontiers exist but all of them are temporarily suppressed: stay, return_to_start, or complete.
     # Requires `frontier_suppression_enabled: true`
     all_frontiers_suppressed_behavior: return_to_start
 
@@ -254,4 +256,3 @@ frontier_explorer:
 
     # Maximum number of active suppressed regions kept in memory.
     frontier_suppression_max_regions: 64
-

@@ -93,8 +93,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<int>("map_qos_depth", 1);
   this->declare_parameter<bool>("map_qos_autodetect_on_startup", false);
   this->declare_parameter<double>("map_qos_autodetect_timeout_s", 2.0);
+  this->declare_parameter<std::string>("costmap_qos_durability", "volatile");
   this->declare_parameter<std::string>("costmap_qos_reliability", "reliable");
   this->declare_parameter<int>("costmap_qos_depth", 10);
+  this->declare_parameter<std::string>("local_costmap_qos_durability", "inherit");
   this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
   this->declare_parameter<int>("local_costmap_qos_depth", -1);
   this->declare_parameter<double>("frontier_marker_scale", 0.15);
@@ -249,8 +251,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       this->get_parameter("map_qos_durability").as_string(),
       this->get_parameter("map_qos_reliability").as_string(),
       this->get_parameter("map_qos_depth").as_int(),
+      this->get_parameter("costmap_qos_durability").as_string(),
       this->get_parameter("costmap_qos_reliability").as_string(),
       this->get_parameter("costmap_qos_depth").as_int(),
+      this->get_parameter("local_costmap_qos_durability").as_string(),
       this->get_parameter("local_costmap_qos_reliability").as_string(),
       this->get_parameter("local_costmap_qos_depth").as_int());
   } catch (const std::exception & exc) {
@@ -390,15 +394,18 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(
     this->get_logger(),
     "QoS config: map=[durability=%s,reliability=%s,depth=%zu], "
-    "costmap=[durability=volatile,reliability=%s,depth=%zu], "
-    "local_costmap=[durability=volatile,reliability=%s,depth=%zu%s%s]",
+    "costmap=[durability=%s,reliability=%s,depth=%zu], "
+    "local_costmap=[durability=%s,reliability=%s,depth=%zu%s%s%s]",
     durability_policy_to_string(topic_qos_profiles_.map_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.map_reliability).c_str(),
     topic_qos_profiles_.map_depth,
+    durability_policy_to_string(topic_qos_profiles_.costmap_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.costmap_reliability).c_str(),
     topic_qos_profiles_.costmap_depth,
+    durability_policy_to_string(topic_qos_profiles_.local_costmap_durability).c_str(),
     reliability_policy_to_string(topic_qos_profiles_.local_costmap_reliability).c_str(),
     topic_qos_profiles_.local_costmap_depth,
+    topic_qos_profiles_.local_costmap_durability_inherited ? " (inherit durability)" : "",
     topic_qos_profiles_.local_costmap_reliability_inherited ? " (inherit reliability)" : "",
     topic_qos_profiles_.local_costmap_depth_inherited ? " (inherit depth)" : "");
   if (completion_event_config_.enabled) {

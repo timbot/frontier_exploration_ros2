@@ -94,8 +94,10 @@ private:
     declare_parameter<std::string>("map_qos_durability", "transient_local");
     declare_parameter<std::string>("map_qos_reliability", "reliable");
     declare_parameter<int>("map_qos_depth", 1);
+    declare_parameter<std::string>("costmap_qos_durability", "volatile");
     declare_parameter<std::string>("costmap_qos_reliability", "reliable");
     declare_parameter<int>("costmap_qos_depth", 10);
+    declare_parameter<std::string>("local_costmap_qos_durability", "inherit");
     declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
     declare_parameter<int>("local_costmap_qos_depth", -1);
 
@@ -214,8 +216,10 @@ private:
       get_parameter("map_qos_durability").as_string(),
       get_parameter("map_qos_reliability").as_string(),
       get_parameter("map_qos_depth").as_int(),
+      get_parameter("costmap_qos_durability").as_string(),
       get_parameter("costmap_qos_reliability").as_string(),
       get_parameter("costmap_qos_depth").as_int(),
+      get_parameter("local_costmap_qos_durability").as_string(),
       get_parameter("local_costmap_qos_reliability").as_string(),
       get_parameter("local_costmap_qos_depth").as_int());
   }

@@ -1405,8 +1405,9 @@ When all current candidates are suppressed, `all_frontiers_suppressed_behavior` 
 
 - `stay`: wait in place for map or costmap changes
 - `return_to_start`: temporarily navigate back to the recorded start pose
+- `complete`: finish exploration when every remaining candidate has been suppressed
 
-This temporary return behavior is separate from `return_to_start_on_complete`. It does not mark exploration complete, and it is canceled automatically if usable frontier candidates appear again.
+The temporary return behavior is separate from `return_to_start_on_complete`. It does not mark exploration complete, and it is canceled automatically if usable frontier candidates appear again.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -1554,10 +1555,10 @@ Accepted reliability values:
 | ---------------- | ------------------ | ----------------------------- | ----------------------------- |
 | Map              | `transient_local`  | `reliable`                    | `1`                           |
 | Global costmap   | `volatile`         | `reliable`                    | `10`                          |
-| Local costmap    | `volatile`         | `inherit` from global costmap | `inherit` from global costmap |
+| Local costmap    | `inherit` from global costmap | `inherit` from global costmap | `inherit` from global costmap |
 | Completion event | `transient_local`  | `reliable`                    | `1`                           |
 
-The local costmap subscriber always uses volatile durability. Reliability and depth can either inherit the global costmap settings or be overridden explicitly.
+The local costmap subscriber inherits durability, reliability, and depth from the global costmap settings by default. Each can be overridden explicitly.
 
 ### Startup-Only Map Durability Autodetect
 
@@ -1619,6 +1620,7 @@ Launch file: `launch/frontier_explorer.launch.py`
 | `map_qos_durability`            | `transient_local`             | Overrides map durability                            | Yes               |
 | `map_qos_autodetect_on_startup` | `false`                       | Enables startup autodetect                          | Yes               |
 | `map_qos_autodetect_timeout_s`  | `2.0`                         | Sets timeout per autodetect attempt                 | Yes               |
+| `costmap_qos_durability`        | `volatile`                    | Overrides global costmap durability                 | Yes               |
 | `costmap_qos_reliability`       | `reliable`                    | Overrides global costmap reliability                | Yes               |
 
 Notes:
@@ -1668,8 +1670,10 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `map_qos_depth`                 | `int`    | `1`               | Map subscription queue depth                   | Must be `>= 1`                                           |
 | `map_qos_autodetect_on_startup` | `bool`   | `false`           | Enables startup-only map durability autodetect | Switches at most once, then stops                        |
 | `map_qos_autodetect_timeout_s`  | `double` | `2.0`             | Timeout per autodetect attempt in seconds      | Internally clamped to at least `0.2`                     |
+| `costmap_qos_durability`        | `string` | `volatile`        | Global costmap durability policy               | Allowed: `transient_local`, `volatile`, `system_default` |
 | `costmap_qos_reliability`       | `string` | `reliable`        | Global costmap reliability policy              | Allowed: `reliable`, `best_effort`, `system_default`     |
 | `costmap_qos_depth`             | `int`    | `10`              | Global costmap queue depth                     | Must be `>= 1`                                           |
+| `local_costmap_qos_durability`  | `string` | `inherit`         | Local costmap durability policy                | `inherit` copies the global costmap durability           |
 | `local_costmap_qos_reliability` | `string` | `inherit`         | Local costmap reliability policy               | `inherit` copies the global costmap reliability          |
 | `local_costmap_qos_depth`       | `int`    | `-1`              | Local costmap queue depth                      | Negative values mean inherit from global costmap         |
 
@@ -1712,7 +1716,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `post_goal_min_settle`                      | `double` | `0.80`  | Minimum time to wait after a normal frontier goal result                                                 | Used only when `post_goal_settle_enabled=true`                                                                                                                                                                                                                                                                               |
 | `map_processing_rate_hz`                    | `double` | `1.0`   | Maximum `/map` processing rate for decision-map refresh and normal frontier scheduling                   | Set `<= 0.0` to process every map immediately; on first launch the node samples startup `/map` timing and caps the effective rate so it does not exceed the observed source rate; active-goal urgent preemption/completion checks can still react immediately without eagerly refreshing the decision map                    |
 | `return_to_start_on_complete`               | `bool`   | `true`  | Returns to the recorded start pose after frontier exhaustion                                             | Sends a regular navigation goal back to the saved start pose; packaged configs override this to `false`                                                                                                                                                                                                                      |
-| `all_frontiers_suppressed_behavior`         | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed                | Supported values: `stay`, `return_to_start`; other values are normalized to `stay`; packaged configs override this to `return_to_start`                                                                                                                                                                                      |
+| `all_frontiers_suppressed_behavior`         | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed                | Supported values: `stay`, `return_to_start`, `complete`; other values are normalized to `stay`; packaged configs override this to `return_to_start`                                                                                                                                                                          |
 
 ### Frontier Suppression
 
@@ -1799,9 +1803,11 @@ frontier_explorer:
     map_qos_autodetect_on_startup: false
     map_qos_autodetect_timeout_s: 5.0
 
-    # Costmap QoS profile selection (durability is fixed volatile in code).
+    # Costmap QoS profile selection.
+    costmap_qos_durability: volatile
     costmap_qos_reliability: reliable
     costmap_qos_depth: 10
+    local_costmap_qos_durability: inherit
     local_costmap_qos_reliability: inherit
     local_costmap_qos_depth: -1
 
@@ -1863,7 +1869,7 @@ frontier_explorer:
     # Use if you are having issues with SLAM or Nav2.
     frontier_suppression_enabled: false
 
-    # Behavior when frontiers exist but all of them are temporarily suppressed: stay or return_to_start.
+    # Behavior when frontiers exist but all of them are temporarily suppressed: stay, return_to_start, or complete.
     # Requires `frontier_suppression_enabled: true`
     all_frontiers_suppressed_behavior: return_to_start
 

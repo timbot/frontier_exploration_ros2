@@ -351,6 +351,15 @@ void FrontierSuppression::record_failed_attempt(
   }
 }
 
+void FrontierSuppression::suppress_region(
+  const FrontierLike & frontier,
+  int64_t now_ns,
+  const std::function<void(const std::string &)> & log_warn)
+{
+  prune_expired(now_ns);
+  promote_attempt_to_region(frontier_position(frontier), now_ns, log_warn);
+}
+
 void FrontierSuppression::start_goal_progress_tracking(int dispatch_id, int64_t now_ns)
 {
   // Progress tracking starts from an optimistic baseline and waits for feedback samples.

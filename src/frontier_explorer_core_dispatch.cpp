@@ -444,13 +444,17 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   }
 
   if (cancel_request_in_progress) {
-  // Avoid duplicate cancel requests while previous cancel handshake is in flight.
-  return;
-} 
+    // Avoid duplicate cancel requests while previous cancel handshake is in flight.
+    return;
+  }
 
-if (!active_goal_cost_status.has_value()) {
-  active_goal_blocked_reason.reset();
-}
+  if (!active_goal_cost_status.has_value()) {
+    active_goal_blocked_reason.reset();
+  }
+
+  if (active_goal_cost_status.has_value()) {
+    suppress_blocked_frontier_region(*active_goal_frontier, *active_goal_cost_status);
+  }
 
   const auto active_goal_point = active_goal_target_point();
   if (!active_goal_point.has_value()) {
@@ -896,6 +900,7 @@ bool FrontierExplorerCore::send_frontier_goal(
     callbacks.log_info(
       "Skipping blocked frontier goal before dispatch: " + *cost_status +
       "; " + describe_frontier(candidate_frontier));
+    suppress_blocked_frontier_region(candidate_frontier, *cost_status);
   }
 
   if (dispatch_index >= frontier_sequence.size()) {

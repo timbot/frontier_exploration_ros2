@@ -189,6 +189,36 @@ TEST(FrontierSearchTests, GlobalCostmapBlockingEliminatesFrontiers)
   EXPECT_TRUE(result.frontiers.empty());
 }
 
+TEST(FrontierSearchTests, BlockedUnknownCostmapCellsDoNotEliminateAdjacentFrontiers)
+{
+  std::vector<std::pair<int, int>> free_cells;
+  for (int x = 3; x < 7; ++x) {
+    for (int y = 3; y < 7; ++y) {
+      free_cells.emplace_back(x, y);
+    }
+  }
+
+  auto map_msg = build_grid(10, 10, -1);
+  set_cells(map_msg, free_cells, 0);
+
+  auto costmap_msg = build_grid(10, 10, 100);
+  set_cells(costmap_msg, free_cells, 0);
+
+  const OccupancyGrid2d occupancy_map(map_msg);
+  const OccupancyGrid2d costmap(costmap_msg);
+  auto result = get_frontier(make_pose(4.0, 4.0), occupancy_map, costmap);
+
+  ASSERT_FALSE(result.frontiers.empty());
+  for (const auto & frontier : result.frontiers) {
+    const auto [goal_x, goal_y] = frontier.goal_point;
+    int map_x = 0;
+    int map_y = 0;
+    ASSERT_TRUE(occupancy_map.worldToMapNoThrow(goal_x, goal_y, map_x, map_y));
+    EXPECT_EQ(occupancy_map.getCost(map_x, map_y), 0);
+    EXPECT_EQ(costmap.getCost(map_x, map_y), 0);
+  }
+}
+
 TEST(FrontierSearchTests, LocalCostmapBlockingDoesNotEliminateFrontierExtraction)
 {
   std::vector<std::pair<int, int>> free_cells;

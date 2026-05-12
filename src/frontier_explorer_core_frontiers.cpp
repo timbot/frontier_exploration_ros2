@@ -547,13 +547,6 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_dispatch_goal_pose(
         return false;
       }
 
-      const double target_distance = std::hypot(
-        world_point.first - target_point.first,
-        world_point.second - target_point.second);
-      if (target_distance < params.frontier_selection_min_distance) {
-        return false;
-      }
-
       const auto local_cost = world_point_cost(local_costmap, world_point);
       if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
         return false;
@@ -567,8 +560,14 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_dispatch_goal_pose(
       return true;
     };
 
-  const int max_radius = std::max(map->getSizeX(), map->getSizeY());
-  for (int radius = 0; radius < max_radius; ++radius) {
+  const double map_resolution = map->map().info.resolution;
+  const double max_adjustment_m = std::max(
+    params.frontier_visit_tolerance,
+    map_resolution);
+  const int max_radius = std::max(
+    0,
+    static_cast<int>(std::ceil(max_adjustment_m / map_resolution)));
+  for (int radius = 0; radius <= max_radius; ++radius) {
     std::optional<std::pair<double, double>> best_world_point;
     double best_distance_sq = std::numeric_limits<double>::infinity();
 

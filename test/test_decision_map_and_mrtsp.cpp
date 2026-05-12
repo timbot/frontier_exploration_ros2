@@ -1168,6 +1168,36 @@ TEST(MrtspOrderingTests, MinGoalDistancePrefersFarEnoughGoalPointWhenAvailable)
   EXPECT_GE(std::hypot(dx, dy), 2.0);
 }
 
+TEST(MrtspOrderingTests, MinGoalDistanceRejectsCloseOnlyFrontier)
+{
+  auto map_msg = build_grid(5, 5, 0);
+  auto costmap_msg = build_grid(5, 5, 0);
+  const OccupancyGrid2d occupancy_map(map_msg);
+  const OccupancyGrid2d costmap(costmap_msg);
+
+  FrontierCache frontier_cache(5, 5);
+  std::vector<FrontierPoint *> frontier_points{
+    frontier_cache.getPoint(2, 2),
+  };
+
+  FrontierSearchOptions options;
+  options.min_frontier_size_cells = 1;
+  options.candidate_min_goal_distance_m = 10.0;
+
+  const auto candidate = build_frontier_candidate(
+    frontier_points,
+    {2, 2},
+    occupancy_map,
+    costmap,
+    std::nullopt,
+    frontier_cache,
+    make_pose(2.5, 2.5),
+    0.0,
+    options);
+
+  EXPECT_FALSE(candidate.has_value());
+}
+
 TEST(MrtspOrderingTests, CenterPointTieBreakMatchesSortedCellOrder)
 {
   auto map_msg = build_grid(8, 8, 0);

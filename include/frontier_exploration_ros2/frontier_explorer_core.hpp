@@ -476,10 +476,14 @@ private:
   bool suppression_enabled() const;
   bool suppression_runtime_active(int64_t now_ns) const;
   bool should_return_to_start_when_all_frontiers_suppressed() const;
+  bool should_complete_when_all_frontiers_suppressed() const;
   FrontierSequence filter_frontiers_for_suppression(const FrontierSequence & frontiers);
   double frontier_snapshot_min_goal_distance_for_pose(
     const geometry_msgs::msg::Pose & current_pose);
   void record_failed_frontier_attempt(const std::optional<FrontierLike> & frontier);
+  void suppress_blocked_frontier_region(
+    const FrontierLike & frontier,
+    const std::string & reason);
   void clear_active_goal_progress_state();
   void start_active_goal_progress_tracking();
   void commit_deferred_costmap_search_input_updates();

@@ -43,27 +43,35 @@ TEST(QosUtilsTests, ResolveProfilesParsesAndInheritsLocalCostmap)
     "transient_local",
     "reliable",
     1,
+    "transient_local",
     "best_effort",
     7,
+    "inherit",
     "inherit",
     -1);
 
   EXPECT_EQ(profiles.map_durability, rclcpp::DurabilityPolicy::TransientLocal);
   EXPECT_EQ(profiles.map_reliability, rclcpp::ReliabilityPolicy::Reliable);
   EXPECT_EQ(profiles.map_depth, 1u);
+  EXPECT_EQ(profiles.costmap_durability, rclcpp::DurabilityPolicy::TransientLocal);
   EXPECT_EQ(profiles.costmap_reliability, rclcpp::ReliabilityPolicy::BestEffort);
   EXPECT_EQ(profiles.costmap_depth, 7u);
+  EXPECT_EQ(profiles.local_costmap_durability, profiles.costmap_durability);
   EXPECT_EQ(profiles.local_costmap_reliability, profiles.costmap_reliability);
   EXPECT_EQ(profiles.local_costmap_depth, profiles.costmap_depth);
+  EXPECT_TRUE(profiles.local_costmap_durability_inherited);
   EXPECT_TRUE(profiles.local_costmap_reliability_inherited);
   EXPECT_TRUE(profiles.local_costmap_depth_inherited);
 
   const auto map_profile = profiles.make_map_qos().get_rmw_qos_profile();
+  const auto costmap_profile = profiles.make_costmap_qos().get_rmw_qos_profile();
   const auto local_profile = profiles.make_local_costmap_qos().get_rmw_qos_profile();
   EXPECT_EQ(map_profile.depth, 1u);
   EXPECT_EQ(map_profile.durability, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
+  EXPECT_EQ(costmap_profile.depth, 7u);
+  EXPECT_EQ(costmap_profile.durability, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
   EXPECT_EQ(local_profile.depth, 7u);
-  EXPECT_EQ(local_profile.durability, RMW_QOS_POLICY_DURABILITY_VOLATILE);
+  EXPECT_EQ(local_profile.durability, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
 }
 
 // Invalid user-facing QoS values must fail fast with clear exceptions.
@@ -74,8 +82,10 @@ TEST(QosUtilsTests, InvalidProfileValueThrows)
       "invalid",
       "reliable",
       1,
+      "volatile",
       "reliable",
       10,
+      "inherit",
       "inherit",
       -1)),
     std::invalid_argument);
@@ -84,8 +94,22 @@ TEST(QosUtilsTests, InvalidProfileValueThrows)
       "volatile",
       "reliable",
       0,
+      "volatile",
       "reliable",
       10,
+      "inherit",
+      "inherit",
+      -1)),
+    std::invalid_argument);
+  EXPECT_THROW(
+    static_cast<void>(resolve_topic_qos_profiles(
+      "volatile",
+      "reliable",
+      1,
+      "invalid",
+      "reliable",
+      10,
+      "inherit",
       "inherit",
       -1)),
     std::invalid_argument);

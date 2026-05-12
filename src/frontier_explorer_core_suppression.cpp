@@ -40,6 +40,11 @@ bool FrontierExplorerCore::should_return_to_start_when_all_frontiers_suppressed(
   return params.all_frontiers_suppressed_behavior == "return_to_start";
 }
 
+bool FrontierExplorerCore::should_complete_when_all_frontiers_suppressed() const
+{
+  return params.all_frontiers_suppressed_behavior == "complete";
+}
+
 FrontierSuppression * FrontierExplorerCore::ensure_frontier_suppression()
 {
   if (!suppression_enabled()) {
@@ -90,6 +95,27 @@ void FrontierExplorerCore::record_failed_frontier_attempt(
       now_ns,
       callbacks.log_warn);
   }
+}
+
+void FrontierExplorerCore::suppress_blocked_frontier_region(
+  const FrontierLike & frontier,
+  const std::string & reason)
+{
+  const int64_t now_ns = callbacks.now_ns();
+  if (!suppression_runtime_active(now_ns)) {
+    return;
+  }
+  FrontierSuppression * suppression = ensure_frontier_suppression();
+  if (!suppression) {
+    return;
+  }
+  suppression->suppress_region(
+    frontier,
+    now_ns,
+    callbacks.log_warn);
+  callbacks.log_info(
+    "Temporarily suppressing blocked frontier region: " + reason +
+    "; " + describe_frontier(frontier));
 }
 
 void FrontierExplorerCore::clear_active_goal_progress_state()
@@ -151,6 +177,14 @@ bool FrontierExplorerCore::evaluate_active_goal_progress_timeout()
 void FrontierExplorerCore::handle_all_frontiers_suppressed(
   const geometry_msgs::msg::Pose & current_pose)
 {
+  if (should_complete_when_all_frontiers_suppressed()) {
+    if (!return_to_start_completed) {
+      callbacks.log_info("All currently detected frontiers are suppressed; completing exploration");
+      handle_exploration_complete(current_pose);
+    }
+    return;
+  }
+
   if (
     !should_return_to_start_when_all_frontiers_suppressed() ||
     !start_pose.has_value() ||

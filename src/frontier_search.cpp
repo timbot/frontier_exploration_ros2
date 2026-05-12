@@ -511,6 +511,12 @@ std::optional<FrontierCandidate> build_frontier_candidate(
     });
   }
 
+  if (apply_min_goal_distance && !best_far_goal_point.has_value()) {
+    // A normal min-distance search should not keep close-only candidates alive.
+    // Escape mode can rerun with min_goal_distance=0.0 when all remaining work is nearby.
+    return std::nullopt;
+  }
+
   const auto & goal_point = best_far_goal_point.has_value() ? best_far_goal_point : best_any_goal_point;
   if (!goal_point.has_value()) {
     // Cluster has no reachable free neighbor after cost filtering.
@@ -768,32 +774,25 @@ bool is_frontier_point(
     return false;
   }
 
-  // A frontier point must touch free map space and must not be blocked by costmaps.
-  bool blocked_neighbor = false;
+  // A frontier point must touch at least one free map cell that can be used as a
+  // navigation endpoint. Costmaps are applied to those free cells, not to the
+  // unknown frontier cell itself: Nav2 may represent unknown boundary cells as
+  // blocked in its costmap while still allowing goals on adjacent known-free map
+  // cells during exploration.
   bool has_free_neighbor = false;
   for_each_neighbor(point, occupancy_map, frontier_cache, [&](FrontierPoint * neighbor) {
-    if (blocked_neighbor) {
+    if (has_free_neighbor) {
       return;
     }
 
     const int map_cost = occupancy_map.getCost(neighbor->mapX, neighbor->mapY);
-
-    if (context->global_cost_blocked(neighbor->mapX, neighbor->mapY)) {
-      // Any blocked adjacent cell disqualifies this frontier candidate.
-      blocked_neighbor = true;
-      return;
-    }
-
-    if (map_cost == static_cast<int>(OccupancyGrid2d::CostValues::FreeSpace)) {
+    if (
+      map_cost == static_cast<int>(OccupancyGrid2d::CostValues::FreeSpace) &&
+      !context->global_cost_blocked(neighbor->mapX, neighbor->mapY))
+    {
       has_free_neighbor = true;
     }
   });
-
-  if (blocked_neighbor) {
-    // Blocked adjacency takes precedence over free-neighbor condition.
-    cache_frontier_eligibility(false);
-    return false;
-  }
 
   cache_frontier_eligibility(has_free_neighbor);
   return has_free_neighbor;
