@@ -97,6 +97,21 @@ void FrontierExplorerCore::record_failed_frontier_attempt(
   }
 }
 
+void FrontierExplorerCore::suppress_failed_frontier_goal(
+  const std::optional<FrontierLike> & frontier,
+  const FrontierSequence & frontier_sequence,
+  const std::string & reason)
+{
+  if (frontier.has_value()) {
+    suppress_blocked_frontier_region(*frontier, reason);
+    return;
+  }
+
+  if (!frontier_sequence.empty()) {
+    suppress_blocked_frontier_region(frontier_sequence.front(), reason);
+  }
+}
+
 void FrontierExplorerCore::suppress_blocked_frontier_region(
   const FrontierLike & frontier,
   const std::string & reason)

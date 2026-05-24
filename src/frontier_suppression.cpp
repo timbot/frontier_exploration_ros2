@@ -174,6 +174,11 @@ void FrontierSuppression::prune_expired(int64_t now_ns)
   }
 }
 
+bool FrontierSuppression::is_point_suppressed(const std::pair<double, double> & point) const
+{
+  return point_in_any_region(point);
+}
+
 FrontierSequence FrontierSuppression::filter_frontiers(const FrontierSequence & frontiers) const
 {
   if (state_.regions.empty()) {

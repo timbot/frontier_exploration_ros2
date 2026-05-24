@@ -19,11 +19,15 @@ limitations under the License.
 #include "frontier_explorer_core_detail.hpp"
 #include "frontier_exploration_ros2/mrtsp_solver.hpp"
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace frontier_exploration_ros2
 {
@@ -492,120 +496,255 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   return goal_pose;
 }
 
-geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_dispatch_goal_pose(
+std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_goal_point(
   const FrontierLike & target_frontier,
   const geometry_msgs::msg::Pose & current_pose,
   bool bypass_min_distance_dispatch) const
 {
-  const auto goal_pose_for_point =
-    [this, &current_pose](const std::pair<double, double> & target_point) {
-      geometry_msgs::msg::PoseStamped goal_pose;
-      goal_pose.header.frame_id = params.global_frame;
-      goal_pose.pose.position.x = target_point.first;
-      goal_pose.pose.position.y = target_point.second;
-      goal_pose.pose.orientation = current_pose.orientation;
-      const double to_target_dx = target_point.first - current_pose.position.x;
-      const double to_target_dy = target_point.second - current_pose.position.y;
-      if (std::hypot(to_target_dx, to_target_dy) > 0.05) {
-        goal_pose.pose.orientation = detail::quaternion_from_yaw(std::atan2(to_target_dy, to_target_dx));
-      }
-      return goal_pose;
-    };
-
-  const auto fallback_goal_pose = build_goal_pose(target_frontier, current_pose);
-  if (bypass_min_distance_dispatch ||
-    params.frontier_selection_min_distance <= 0.0 ||
-    !map.has_value())
-  {
-    return fallback_goal_pose;
-  }
-
   const auto target_point = frontier_position(target_frontier);
-  const double distance_to_robot = std::hypot(
-    target_point.first - current_pose.position.x,
-    target_point.second - current_pose.position.y);
-  if (distance_to_robot >= params.frontier_selection_min_distance) {
-    return fallback_goal_pose;
+  if (!map.has_value()) {
+    return target_point;
   }
 
   int target_map_x = 0;
   int target_map_y = 0;
   if (!map->worldToMapNoThrow(target_point.first, target_point.second, target_map_x, target_map_y)) {
-    return fallback_goal_pose;
+    return std::nullopt;
   }
 
-  const auto is_dispatch_cell_eligible = [this, &current_pose, &target_point](int map_x, int map_y) {
-      if (map->getCost(map_x, map_y) != static_cast<int>(OccupancyGrid2d::CostValues::FreeSpace)) {
-        return false;
-      }
+  if (
+    suppression_runtime_active(callbacks.now_ns()) && frontier_suppression_ &&
+    frontier_suppression_->is_point_suppressed(target_point))
+  {
+    return std::nullopt;
+  }
 
-      const auto world_point = map->mapToWorld(map_x, map_y);
-      const double robot_distance = std::hypot(
-        world_point.first - current_pose.position.x,
-        world_point.second - current_pose.position.y);
-      if (robot_distance < params.frontier_selection_min_distance) {
-        return false;
-      }
+  if (!bypass_min_distance_dispatch && params.frontier_selection_min_distance > 0.0) {
+    const double robot_distance = std::hypot(
+      target_point.first - current_pose.position.x,
+      target_point.second - current_pose.position.y);
+    if (robot_distance < params.frontier_selection_min_distance) {
+      return std::nullopt;
+    }
+  }
 
-      const auto local_cost = world_point_cost(local_costmap, world_point);
-      if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
-        return false;
-      }
+  int robot_map_x = 0;
+  int robot_map_y = 0;
+  if (!map->worldToMapNoThrow(
+      current_pose.position.x,
+      current_pose.position.y,
+      robot_map_x,
+      robot_map_y))
+  {
+    return std::nullopt;
+  }
 
-      const auto global_cost = world_point_cost(costmap, world_point);
-      if (global_cost.has_value() && *global_cost >= params.occ_threshold) {
-        return false;
-      }
+  const int width = map->getSizeX();
+  const int height = map->getSizeY();
+  if (width <= 0 || height <= 0) {
+    return std::nullopt;
+  }
 
-      return true;
+  const double min_robot_distance = bypass_min_distance_dispatch ?
+    0.0 :
+    std::max(0.0, params.frontier_selection_min_distance);
+  const double min_robot_distance_sq = min_robot_distance * min_robot_distance;
+  const double clearance_radius = std::max(0.0, params.dispatch_clearance_radius_m);
+
+  const auto in_bounds = [width, height](int map_x, int map_y) {
+      return map_x >= 0 && map_y >= 0 && map_x < width && map_y < height;
     };
 
-  const double map_resolution = map->map().info.resolution;
-  const double max_adjustment_m = std::max(
-    params.frontier_visit_tolerance,
-    map_resolution);
-  const int max_radius = std::max(
-    0,
-    static_cast<int>(std::ceil(max_adjustment_m / map_resolution)));
-  for (int radius = 0; radius <= max_radius; ++radius) {
-    std::optional<std::pair<double, double>> best_world_point;
-    double best_distance_sq = std::numeric_limits<double>::infinity();
+  const auto grid_cell_blocked = [this](const OccupancyGrid2d & grid, int map_x, int map_y) {
+      return grid.getCost(map_x, map_y) >= params.occ_threshold;
+    };
 
-    const auto consider_cell = [&](int map_x, int map_y) {
-        if (map_x < 0 || map_y < 0 || map_x >= map->getSizeX() || map_y >= map->getSizeY()) {
-          return;
-        }
-        if (!is_dispatch_cell_eligible(map_x, map_y)) {
-          return;
-        }
-
-        const auto world_point = map->mapToWorld(map_x, map_y);
-        const double target_distance_sq = squared_distance(world_point, target_point);
-        if (target_distance_sq < best_distance_sq) {
-          best_distance_sq = target_distance_sq;
-          best_world_point = world_point;
-        }
-      };
-
-    if (radius == 0) {
-      consider_cell(target_map_x, target_map_y);
-    } else {
-      for (int map_x = target_map_x - radius; map_x <= target_map_x + radius; ++map_x) {
-        consider_cell(map_x, target_map_y - radius);
-        consider_cell(map_x, target_map_y + radius);
+  const auto world_blocked_in_grid =
+    [this, clearance_radius, &grid_cell_blocked](
+    const OccupancyGrid2d & grid,
+    const std::pair<double, double> & world_point) {
+      int grid_x = 0;
+      int grid_y = 0;
+      if (!grid.worldToMapNoThrow(world_point.first, world_point.second, grid_x, grid_y)) {
+        return false;
       }
-      for (int map_y = target_map_y - radius + 1; map_y <= target_map_y + radius - 1; ++map_y) {
-        consider_cell(target_map_x - radius, map_y);
-        consider_cell(target_map_x + radius, map_y);
+      if (clearance_radius <= 0.0) {
+        return grid_cell_blocked(grid, grid_x, grid_y);
       }
+
+      const double resolution = grid.map().info.resolution;
+      const int radius_cells = static_cast<int>(std::ceil(clearance_radius / resolution));
+      for (int y = grid_y - radius_cells; y <= grid_y + radius_cells; ++y) {
+        for (int x = grid_x - radius_cells; x <= grid_x + radius_cells; ++x) {
+          if (x < 0 || y < 0 || x >= grid.getSizeX() || y >= grid.getSizeY()) {
+            continue;
+          }
+          const auto neighbor_world = grid.mapToWorld(x, y);
+          if (
+            std::hypot(
+              neighbor_world.first - world_point.first,
+              neighbor_world.second - world_point.second) <= clearance_radius &&
+            grid_cell_blocked(grid, x, y))
+          {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+  const auto point_blocked = [&](const std::pair<double, double> & world_point) {
+      if (world_blocked_in_grid(*map, world_point)) {
+        return true;
+      }
+      if (costmap.has_value() && world_blocked_in_grid(*costmap, world_point)) {
+        return true;
+      }
+      if (local_costmap.has_value() && world_blocked_in_grid(*local_costmap, world_point)) {
+        return true;
+      }
+      return false;
+    };
+
+  const auto point_suppressed = [&](const std::pair<double, double> & world_point) {
+      return suppression_runtime_active(callbacks.now_ns()) && frontier_suppression_ &&
+             frontier_suppression_->is_point_suppressed(world_point);
+    };
+
+  const auto cell_world = [&](int map_x, int map_y) {
+      return map->mapToWorld(map_x, map_y);
+    };
+
+  const auto cell_traversable = [&](int map_x, int map_y) {
+      if (!in_bounds(map_x, map_y)) {
+        return false;
+      }
+      const auto world_point = cell_world(map_x, map_y);
+      return !point_suppressed(world_point) && !point_blocked(world_point);
+    };
+
+  const auto cell_dispatchable = [&](int map_x, int map_y) {
+      if (!cell_traversable(map_x, map_y)) {
+        return false;
+      }
+      if (min_robot_distance_sq <= 0.0) {
+        return true;
+      }
+      const auto world_point = cell_world(map_x, map_y);
+      const double dx = world_point.first - current_pose.position.x;
+      const double dy = world_point.second - current_pose.position.y;
+      return (dx * dx + dy * dy) >= min_robot_distance_sq;
+    };
+
+  const auto target_cell_dispatchable = [&]() {
+      if (!cell_dispatchable(target_map_x, target_map_y)) {
+        return false;
+      }
+      if (min_robot_distance_sq <= 0.0) {
+        return true;
+      }
+      const double dx = target_point.first - current_pose.position.x;
+      const double dy = target_point.second - current_pose.position.y;
+      return (dx * dx + dy * dy) >= min_robot_distance_sq;
+    };
+
+  const std::size_t cell_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  std::vector<uint8_t> visited(cell_count, 0U);
+  std::deque<std::pair<int, int>> queue;
+  const auto index = [width](int map_x, int map_y) {
+      return static_cast<std::size_t>(map_y) * static_cast<std::size_t>(width) +
+             static_cast<std::size_t>(map_x);
+    };
+
+  visited[index(robot_map_x, robot_map_y)] = 1U;
+  queue.emplace_back(robot_map_x, robot_map_y);
+
+  std::optional<std::pair<int, int>> best_cell;
+  double best_target_distance_sq = std::numeric_limits<double>::infinity();
+  double best_robot_distance_sq = -1.0;
+
+  const auto consider_dispatch_cell = [&](int map_x, int map_y) {
+      if (!cell_dispatchable(map_x, map_y)) {
+        return;
+      }
+      const auto world_point = cell_world(map_x, map_y);
+      const double target_distance_sq = squared_distance(world_point, target_point);
+      const double robot_dx = world_point.first - current_pose.position.x;
+      const double robot_dy = world_point.second - current_pose.position.y;
+      const double robot_distance_sq = robot_dx * robot_dx + robot_dy * robot_dy;
+      constexpr double kTieEpsilon = 1e-12;
+      if (
+        target_distance_sq + kTieEpsilon < best_target_distance_sq ||
+        (std::abs(target_distance_sq - best_target_distance_sq) <= kTieEpsilon &&
+        robot_distance_sq > best_robot_distance_sq))
+      {
+        best_target_distance_sq = target_distance_sq;
+        best_robot_distance_sq = robot_distance_sq;
+        best_cell = {map_x, map_y};
+      }
+    };
+
+  static constexpr std::array<std::pair<int, int>, 8> kNeighborOffsets{{
+    {-1, -1}, {0, -1}, {1, -1},
+    {-1, 0},           {1, 0},
+    {-1, 1},  {0, 1},  {1, 1},
+  }};
+
+  while (!queue.empty()) {
+    const auto [map_x, map_y] = queue.front();
+    queue.pop_front();
+
+    if (map_x == target_map_x && map_y == target_map_y && target_cell_dispatchable()) {
+      return target_point;
     }
+    consider_dispatch_cell(map_x, map_y);
 
-    if (best_world_point.has_value()) {
-      return goal_pose_for_point(*best_world_point);
+    for (const auto & [dx, dy] : kNeighborOffsets) {
+      const int next_x = map_x + dx;
+      const int next_y = map_y + dy;
+      if (!in_bounds(next_x, next_y)) {
+        continue;
+      }
+      const auto next_index = index(next_x, next_y);
+      if (visited[next_index]) {
+        continue;
+      }
+      if (!cell_traversable(next_x, next_y)) {
+        continue;
+      }
+      visited[next_index] = 1U;
+      queue.emplace_back(next_x, next_y);
     }
   }
 
-  return fallback_goal_pose;
+  if (!best_cell.has_value()) {
+    return std::nullopt;
+  }
+
+  return cell_world(best_cell->first, best_cell->second);
+}
+
+geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_dispatch_goal_pose(
+  const FrontierLike & target_frontier,
+  const geometry_msgs::msg::Pose & current_pose,
+  bool bypass_min_distance_dispatch) const
+{
+  const auto target_point = resolve_dispatch_goal_point(
+    target_frontier,
+    current_pose,
+    bypass_min_distance_dispatch).value_or(frontier_position(target_frontier));
+
+  geometry_msgs::msg::PoseStamped goal_pose;
+  goal_pose.header.frame_id = params.global_frame;
+  goal_pose.pose.position.x = target_point.first;
+  goal_pose.pose.position.y = target_point.second;
+  goal_pose.pose.orientation = current_pose.orientation;
+  const double to_target_dx = target_point.first - current_pose.position.x;
+  const double to_target_dy = target_point.second - current_pose.position.y;
+  if (std::hypot(to_target_dx, to_target_dy) > 0.05) {
+    goal_pose.pose.orientation = detail::quaternion_from_yaw(std::atan2(to_target_dy, to_target_dx));
+  }
+  return goal_pose;
 }
 
 std::vector<geometry_msgs::msg::PoseStamped> FrontierExplorerCore::build_goal_pose_sequence(

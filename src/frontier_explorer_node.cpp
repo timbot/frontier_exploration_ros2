@@ -22,6 +22,7 @@ limitations under the License.
 #include <rcutils/logging.h>
 #include <rclcpp/duration.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2/exceptions.h>
 
 #include <algorithm>
@@ -82,6 +83,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("map_topic", "map");
   this->declare_parameter<std::string>("costmap_topic", "global_costmap/costmap");
   this->declare_parameter<std::string>("local_costmap_topic", "local_costmap/costmap");
+  this->declare_parameter<std::string>("watchdog_event_topic", "navigation/watchdog_events");
   this->declare_parameter<std::string>("navigate_to_pose_action_name", "navigate_to_pose");
   this->declare_parameter<std::string>("global_frame", "map");
   this->declare_parameter<std::string>("robot_base_frame", "base_footprint");
@@ -122,6 +124,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("frontier_selection_min_distance", 0.5);
   this->declare_parameter<bool>("escape_enabled", false);
   this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
+  this->declare_parameter<double>("dispatch_clearance_radius_m", 0.0);
   this->declare_parameter<bool>("goal_preemption_enabled", false);
   this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
   this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
@@ -153,6 +156,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   params_.map_topic = this->get_parameter("map_topic").as_string();
   params_.costmap_topic = this->get_parameter("costmap_topic").as_string();
   params_.local_costmap_topic = this->get_parameter("local_costmap_topic").as_string();
+  params_.watchdog_event_topic = this->get_parameter("watchdog_event_topic").as_string();
   params_.navigate_to_pose_action_name = this->get_parameter("navigate_to_pose_action_name").as_string();
   params_.global_frame = this->get_parameter("global_frame").as_string();
   params_.robot_base_frame = this->get_parameter("robot_base_frame").as_string();
@@ -196,6 +200,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "frontier_selection_min_distance").as_double();
   params_.escape_enabled = this->get_parameter("escape_enabled").as_bool();
   params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
+  params_.dispatch_clearance_radius_m = this->get_parameter("dispatch_clearance_radius_m").as_double();
   params_.goal_preemption_enabled = this->get_parameter(
     "goal_preemption_enabled").as_bool();
   params_.goal_skip_on_blocked_goal = this->get_parameter("goal_skip_on_blocked_goal").as_bool();
@@ -355,12 +360,13 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Frontier explorer initialized with autostart=%s, control_service_enabled=%s, map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
+    "Frontier explorer initialized with autostart=%s, control_service_enabled=%s, map '%s', global costmap '%s', local costmap '%s', watchdog events '%s', frontier action '%s'",
     autostart_ ? "true" : "false",
     control_service_enabled_ ? "true" : "false",
     params_.map_topic.c_str(),
     params_.costmap_topic.c_str(),
     params_.local_costmap_topic.c_str(),
+    params_.watchdog_event_topic.c_str(),
     params_.navigate_to_pose_action_name.c_str());
   RCLCPP_INFO(
     this->get_logger(),
@@ -581,6 +587,12 @@ void FrontierExplorerNode::startExplorationRuntime()
     params_.local_costmap_topic,
     topic_qos_profiles_.make_local_costmap_qos(),
     std::bind(&FrontierExplorerNode::localCostmapCallback, this, std::placeholders::_1));
+  if (!params_.watchdog_event_topic.empty()) {
+    watchdog_event_sub_ = this->create_subscription<std_msgs::msg::String>(
+      params_.watchdog_event_topic,
+      10,
+      std::bind(&FrontierExplorerNode::watchdogEventCallback, this, std::placeholders::_1));
+  }
   if (params_.map_processing_rate_hz > 0.0) {
     if (effective_map_processing_rate_hz_.has_value()) {
       ensureMapProcessingTimer();
@@ -632,6 +644,7 @@ void FrontierExplorerNode::enterColdIdle()
   map_sub_.reset();
   costmap_sub_.reset();
   local_costmap_sub_.reset();
+  watchdog_event_sub_.reset();
   map_autodetect_timer_.reset();
   map_processing_timer_.reset();
   suppression_watchdog_timer_.reset();
@@ -1149,6 +1162,21 @@ void FrontierExplorerNode::localCostmapCallback(const nav_msgs::msg::OccupancyGr
     return;
   }
   core_->localCostmapCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::ConstSharedPtr msg)
+{
+  if (runtime_state_ != RuntimeState::RUNNING || !core_) {
+    return;
+  }
+  if (msg->data.find("nav_blocked") == std::string::npos) {
+    return;
+  }
+  RCLCPP_WARN(
+    this->get_logger(),
+    "Navigation watchdog reported blocked exploration goal: %s",
+    msg->data.c_str());
+  core_->handle_navigation_blocked_event(msg->data);
 }
 
 void FrontierExplorerNode::publishCompletionEvent()

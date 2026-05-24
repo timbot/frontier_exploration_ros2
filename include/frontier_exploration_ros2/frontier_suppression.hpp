@@ -123,6 +123,8 @@ public:
 
   // Drop expired attempt and region entries using the shared suppression TTL.
   void prune_expired(int64_t now_ns);
+  // Check whether a concrete dispatch point falls inside a live suppression region.
+  bool is_point_suppressed(const std::pair<double, double> & point) const;
   // Remove frontier candidates whose selected goal points fall inside a suppressed square region.
   FrontierSequence filter_frontiers(const FrontierSequence & frontiers) const;
   // Record one failed attempt and promote it into a suppression region once the threshold is reached.

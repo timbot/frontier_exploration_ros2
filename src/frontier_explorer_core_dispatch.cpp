@@ -247,6 +247,31 @@ void FrontierExplorerCore::stop_exploration_session(const std::string & reason)
   }
 }
 
+void FrontierExplorerCore::handle_navigation_blocked_event(const std::string & reason)
+{
+  if (
+    !exploration_enabled ||
+    !goal_in_progress ||
+    active_goal_kind != "frontier" ||
+    cancel_request_in_progress ||
+    goal_state == GoalLifecycleState::CANCELING)
+  {
+    return;
+  }
+
+  if (!active_goal_frontier.has_value() && active_goal_frontiers.empty()) {
+    return;
+  }
+
+  const std::string cancel_reason =
+    "Navigation watchdog reported blocked frontier goal; canceling active frontier goal";
+  suppress_failed_frontier_goal(
+    active_goal_frontier,
+    active_goal_frontiers,
+    cancel_reason + ": " + reason);
+  request_active_goal_cancel(cancel_reason);
+}
+
 bool FrontierExplorerCore::ready_for_shutdown() const
 {
   return !goal_in_progress && !cancel_request_in_progress;
@@ -886,26 +911,48 @@ bool FrontierExplorerCore::send_frontier_goal(
   }
 
   std::size_t dispatch_index = 0U;
+  std::optional<std::pair<double, double>> dispatch_goal_point;
   for (; dispatch_index < frontier_sequence.size(); ++dispatch_index) {
     const auto & candidate_frontier = frontier_sequence[dispatch_index];
-    if (!params.goal_skip_on_blocked_goal) {
-      break;
+    dispatch_goal_point = resolve_dispatch_goal_point(
+      candidate_frontier,
+      current_pose,
+      bypass_min_distance_dispatch);
+    if (!dispatch_goal_point.has_value()) {
+      const std::string unsafe_reason =
+        "No dispatchable goal point for selected frontier";
+      callbacks.log_info(
+        "Skipping unsafe frontier goal before dispatch: " + unsafe_reason +
+        "; " + describe_frontier(candidate_frontier));
+      suppress_blocked_frontier_region(candidate_frontier, unsafe_reason);
+      continue;
     }
 
-    const auto cost_status = frontier_cost_status(std::optional<FrontierLike>{candidate_frontier});
-    if (!cost_status.has_value()) {
-      break;
+    if (params.goal_skip_on_blocked_goal) {
+      const FrontierLike dispatch_frontier = frontier_with_goal_point(
+        candidate_frontier,
+        *dispatch_goal_point);
+      const auto cost_status = frontier_cost_status(std::optional<FrontierLike>{dispatch_frontier});
+      if (cost_status.has_value()) {
+        callbacks.log_info(
+          "Skipping blocked frontier goal before dispatch: " + *cost_status +
+          "; " + describe_frontier(dispatch_frontier));
+        suppress_blocked_frontier_region(dispatch_frontier, *cost_status);
+        continue;
+      }
     }
 
-    callbacks.log_info(
-      "Skipping blocked frontier goal before dispatch: " + *cost_status +
-      "; " + describe_frontier(candidate_frontier));
-    suppress_blocked_frontier_region(candidate_frontier, *cost_status);
+    break;
   }
 
   if (dispatch_index >= frontier_sequence.size()) {
     callbacks.log_info(
-      "All selected frontier goals are blocked before dispatch; waiting for updated costmap or frontier data");
+      "All selected frontier goals are blocked, unsafe, suppressed, or too close before dispatch; "
+      "waiting for updated costmap or frontier data");
+    return false;
+  }
+
+  if (!dispatch_goal_point.has_value()) {
     return false;
   }
 
@@ -915,6 +962,23 @@ bool FrontierExplorerCore::send_frontier_goal(
     dispatch_sequence.push_back(frontier_sequence[index]);
   }
 
+  const auto requested_goal_point = frontier_position(dispatch_sequence.front());
+  const bool dispatch_point_adjusted =
+    squared_distance(requested_goal_point, *dispatch_goal_point) > 1e-6;
+  if (dispatch_point_adjusted) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2)
+        << "Adjusted frontier dispatch to nearest reachable safe point: requested=("
+        << requested_goal_point.first << ", " << requested_goal_point.second
+        << "), dispatch=(" << dispatch_goal_point->first << ", "
+        << dispatch_goal_point->second << "); "
+        << describe_frontier(dispatch_sequence.front());
+    callbacks.log_info(oss.str());
+  }
+  dispatch_sequence.front() = frontier_with_goal_point(
+    dispatch_sequence.front(),
+    *dispatch_goal_point);
+
   const auto goal_pose = build_dispatch_goal_pose(
     dispatch_sequence.front(),
     current_pose,
@@ -922,9 +986,19 @@ bool FrontierExplorerCore::send_frontier_goal(
   if (debug_outputs_enabled()) {
     callbacks.publish_selected_frontier_pose(goal_pose);
   }
-  const std::string dispatch_description = dispatch_index == 0U ?
-    description :
-    "Sending frontier goal after blocked-goal skip: " + describe_frontier(dispatch_sequence.front());
+
+  std::string dispatch_description;
+  if (dispatch_index != 0U) {
+    dispatch_description =
+      "Sending frontier goal after blocked-goal skip: " + describe_frontier(dispatch_sequence.front());
+  } else if (dispatch_point_adjusted) {
+    const auto description_prefix_end = description.find(": ");
+    dispatch_description = description_prefix_end == std::string::npos ?
+      "Sending frontier goal: " + describe_frontier(dispatch_sequence.front()) :
+      description.substr(0, description_prefix_end + 2) + describe_frontier(dispatch_sequence.front());
+  } else {
+    dispatch_description = description;
+  }
   // Frontier mode dispatches only the first element from the selected sequence.
   return send_pose_goal(
     goal_pose,
@@ -1033,10 +1107,15 @@ void FrontierExplorerCore::goal_response_callback(
       return_to_start_started = false;
     }
     if (context.has_value() && context->goal_kind == "suppressed_return_to_start") {
-      suppressed_return_to_start_started = false;
+      // A rejected temporary return-to-start is not useful to retry in a tight
+      // loop; wait for suppression to expire or for new frontiers to appear.
+      suppressed_return_to_start_started = true;
     }
     if (context.has_value() && context->goal_kind == "frontier") {
-      record_failed_frontier_attempt(context->frontier);
+      suppress_failed_frontier_goal(
+        context->frontier,
+        context->frontier_sequence,
+        "Frontier goal was rejected by the navigation action server");
     }
     clear_active_goal_state();
     callbacks.log_error(error_message.empty() ? "Frontier goal was rejected" : error_message);
@@ -1103,17 +1182,26 @@ void FrontierExplorerCore::get_result_callback(
         frontier_suppression_ &&
         frontier_suppression_->progress_timeout_cancel_requested())
       {
-        record_failed_frontier_attempt(context.has_value() ? context->frontier : std::optional<FrontierLike>{});
+        suppress_failed_frontier_goal(
+          context.has_value() ? context->frontier : std::optional<FrontierLike>{},
+          frontier_sequence,
+          "Frontier goal was canceled after no meaningful progress");
       }
     } else {
       if (goal_kind == "return_to_start") {
         // Failed/aborted return-to-start should permit a future retry.
         return_to_start_started = false;
       } else if (goal_kind == "suppressed_return_to_start") {
-        suppressed_return_to_start_started = false;
+        // Temporary return-to-start is only a waiting posture while all
+        // frontiers are suppressed. If Nav2 cannot plan it, do not thrash.
+        suppressed_return_to_start_started = true;
       }
       if (goal_kind == "frontier") {
-        record_failed_frontier_attempt(context.has_value() ? context->frontier : std::optional<FrontierLike>{});
+        suppress_failed_frontier_goal(
+          context.has_value() ? context->frontier : std::optional<FrontierLike>{},
+          frontier_sequence,
+          "Frontier goal failed with status " + detail::status_to_string(status) +
+          ", error_code=" + std::to_string(error_code));
       }
       callbacks.log_warn(
         goal_kind + " finished with status " + detail::status_to_string(status) +
@@ -1129,7 +1217,7 @@ void FrontierExplorerCore::get_result_callback(
       // Exceptions in result wait path should also reopen return-to-start retry path.
       return_to_start_started = false;
     } else if (goal_kind == "suppressed_return_to_start") {
-      suppressed_return_to_start_started = false;
+      suppressed_return_to_start_started = true;
     }
     callbacks.log_error("Failed while waiting for result: " + exception_text);
   }

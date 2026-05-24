@@ -210,7 +210,8 @@ TEST(FrontierSearchTests, BlockedUnknownCostmapCellsDoNotEliminateAdjacentFronti
 
   ASSERT_FALSE(result.frontiers.empty());
   for (const auto & frontier : result.frontiers) {
-    const auto [goal_x, goal_y] = frontier.goal_point;
+    ASSERT_TRUE(frontier.goal_point.has_value());
+    const auto [goal_x, goal_y] = *frontier.goal_point;
     int map_x = 0;
     int map_y = 0;
     ASSERT_TRUE(occupancy_map.worldToMapNoThrow(goal_x, goal_y, map_x, map_y));

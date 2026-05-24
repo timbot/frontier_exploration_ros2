@@ -12,6 +12,9 @@ frontier_explorer:
     # Local costmap topic used to invalidate nearby blocked frontier goals.
     local_costmap_topic: /local_costmap/costmap
 
+    # Watchdog event topic used to cancel blocked active frontier goals.
+    watchdog_event_topic: /navigation/watchdog_events
+
     # Nav2 NavigateToPose action name.
     navigate_to_pose_action_name: navigate_to_pose
 
@@ -99,7 +102,7 @@ frontier_explorer:
     goal_preemption_min_interval_s: 2.0
 
     # Skip the active frontier goal if it becomes blocked.
-    goal_skip_on_blocked_goal: true
+    goal_skip_on_blocked_goal: false
 
     # Enable the post-goal settle delay after a successful frontier goal.
     # Useful if you want stability over speed. Use if you have slow SLAM & LiDAR configuration. 
@@ -163,6 +166,11 @@ frontier_explorer:
     # Distance used to treat a frontier region as recently visited.
     # Use if you are having navigation loops.
     frontier_visit_tolerance: 0.40
+
+    # Optional footprint clearance radius for trimmed dispatch points. When
+    # greater than zero, dispatch trimming only traverses/targets cells whose
+    # surrounding map/costmap neighborhood is below occ_threshold.
+    dispatch_clearance_radius_m: 0.0
 
 
     # --------------- Map Optimization --------------- #

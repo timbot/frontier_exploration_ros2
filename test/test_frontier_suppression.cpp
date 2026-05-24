@@ -20,6 +20,7 @@ limitations under the License.
 #include <geometry_msgs/msg/pose.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
@@ -83,6 +84,11 @@ nav_msgs::msg::OccupancyGrid build_grid(int width, int height, int default_value
   msg.info.origin.orientation.w = 1.0;
   msg.data.assign(static_cast<std::size_t>(width * height), static_cast<int8_t>(default_value));
   return msg;
+}
+
+void set_grid_cell(nav_msgs::msg::OccupancyGrid & msg, int x, int y, int8_t value)
+{
+  msg.data[static_cast<std::size_t>(y) * msg.info.width + static_cast<std::size_t>(x)] = value;
 }
 
 std::unique_ptr<FrontierExplorerCore> make_suppression_core(
@@ -277,6 +283,77 @@ TEST(FrontierSuppressionCoreTests, NoProgressTimeoutCanceledGoalCreatesSuppresse
   EXPECT_EQ(core->suppressed_region_count(), 1U);
 }
 
+TEST(FrontierSuppressionCoreTests, AbortedFrontierSuppressesRegionBeforeRetryThreshold)
+{
+  int64_t now_ns = 1'000'000'000;
+  std::vector<GoalDispatchRequest> dispatched_requests;
+
+  FrontierExplorerCoreParams params;
+  params.frontier_suppression_enabled = true;
+  params.frontier_suppression_attempt_threshold = 10;
+  params.frontier_suppression_startup_grace_period_s = 0.0;
+  params.post_goal_settle_enabled = false;
+  params.return_to_start_on_complete = false;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(1.0, 1.0));
+    };
+  callbacks.wait_for_action_server = [](double) {return true;};
+  callbacks.dispatch_goal_request = [&dispatched_requests](const GoalDispatchRequest & request) {
+      dispatched_requests.push_back(request);
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+  callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {make_candidate(4.0, 4.0), make_candidate(8.0, 8.0)};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+  core.map = OccupancyGrid2d(map_msg);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.map_generation = 1;
+  core.costmap_generation = 1;
+  core.local_costmap_generation = 0;
+
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatched_requests.size(), 1U);
+  ASSERT_TRUE(dispatched_requests.back().frontier.has_value());
+  EXPECT_EQ(
+    frontier_position(*dispatched_requests.back().frontier),
+    (std::pair<double, double>{4.0, 4.0}));
+
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_response_callback(core.current_dispatch_id, fake_handle, true, "");
+  core.get_result_callback(
+    core.current_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_ABORTED,
+    208,
+    "");
+
+  EXPECT_EQ(core.suppressed_region_count(), 1U);
+  ASSERT_EQ(dispatched_requests.size(), 2U);
+  ASSERT_TRUE(dispatched_requests.back().frontier.has_value());
+  EXPECT_EQ(
+    frontier_position(*dispatched_requests.back().frontier),
+    (std::pair<double, double>{8.0, 8.0}));
+}
+
 TEST(FrontierSuppressionCoreTests, AllSuppressedCanDispatchTemporaryReturnToStart)
 {
   int64_t now_ns = 1'000'000'000;
@@ -338,6 +415,85 @@ TEST(FrontierSuppressionCoreTests, AllSuppressedCanDispatchTemporaryReturnToStar
   ASSERT_EQ(dispatch_calls, 2);
   EXPECT_EQ(dispatched_goal_kinds.back(), "suppressed_return_to_start");
   EXPECT_FALSE(core.return_to_start_completed);
+}
+
+TEST(FrontierSuppressionCoreTests, SuppressedReturnFailureWaitsForNewFrontiersBeforeRetry)
+{
+  int64_t now_ns = 1'000'000'000;
+  int dispatch_calls = 0;
+  geometry_msgs::msg::Pose current_pose = make_pose(1.0, 1.0);
+  std::vector<std::string> dispatched_goal_kinds;
+  bool use_suppressed_frontier = true;
+
+  FrontierExplorerCoreParams params;
+  params.frontier_suppression_enabled = true;
+  params.frontier_suppression_attempt_threshold = 1;
+  params.frontier_suppression_startup_grace_period_s = 0.0;
+  params.all_frontiers_suppressed_behavior = "return_to_start";
+  params.return_to_start_on_complete = false;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.wait_for_action_server = [](double) {return true;};
+  callbacks.dispatch_goal_request = [&dispatch_calls, &dispatched_goal_kinds](const GoalDispatchRequest & request) {
+      dispatch_calls += 1;
+      dispatched_goal_kinds.push_back(request.goal_kind);
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+  callbacks.frontier_search = [&use_suppressed_frontier](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {
+        use_suppressed_frontier ? make_candidate(4.0, 4.0) : make_candidate(8.0, 8.0)};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+  core.map = OccupancyGrid2d(map_msg);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.map_generation = 1;
+  core.costmap_generation = 1;
+
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 1);
+  core.goal_response_callback(core.current_dispatch_id, nullptr, false, "rejected");
+
+  current_pose = make_pose(3.0, 3.0);
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 2);
+  ASSERT_EQ(dispatched_goal_kinds.back(), "suppressed_return_to_start");
+
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  const int return_dispatch_id = core.current_dispatch_id;
+  core.goal_response_callback(return_dispatch_id, fake_handle, true, "");
+  core.get_result_callback(
+    return_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_ABORTED,
+    208,
+    "");
+
+  core.try_send_next_goal();
+  EXPECT_EQ(dispatch_calls, 2);
+
+  use_suppressed_frontier = false;
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 3);
+  EXPECT_EQ(dispatched_goal_kinds.back(), "frontier");
 }
 
 TEST(FrontierSuppressionCoreTests, AllSuppressedCanCompleteExploration)
@@ -534,6 +690,135 @@ TEST(FrontierSuppressionCoreTests, StartupGracePeriodDefersSuppressionFailures)
   core.goal_response_callback(core.current_dispatch_id, nullptr, false, "rejected");
   EXPECT_TRUE(core.suppression_state_allocated());
   EXPECT_EQ(core.suppressed_region_count(), 1U);
+}
+
+TEST(FrontierDispatchResolutionTests, PreservesReachableFrontierGoal)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 8.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeOccupancyWall)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  for (int y = 0; y < 5; ++y) {
+    set_grid_cell(map_msg, 4, y, 100);
+  }
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 3.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeCostmapWall)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  for (int y = 0; y < 5; ++y) {
+    set_grid_cell(costmap_msg, 4, y, 100);
+  }
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 3.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, TrimsOccupiedTargetWhenExplicitClearanceCheckEnabled)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.dispatch_clearance_radius_m = 1.1;
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  set_grid_cell(map_msg, 5, 2, 100);
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(5.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_NEAR(
+    std::hypot(resolved->first - 5.5, resolved->second - 2.5),
+    std::sqrt(2.0),
+    1e-9);
+  EXPECT_FALSE(resolved->first == 5.5 && resolved->second == 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, RejectsSuppressedFrontierGoal)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto target = make_candidate(8.5, 2.5);
+  const auto current_pose = make_pose(1.5, 2.5);
+  const auto first_resolved = core->resolve_dispatch_goal_point(target, current_pose);
+  ASSERT_TRUE(first_resolved.has_value());
+  EXPECT_DOUBLE_EQ(first_resolved->first, 8.5);
+  EXPECT_DOUBLE_EQ(first_resolved->second, 2.5);
+
+  FrontierSuppressionConfig suppression_config;
+  suppression_config.base_size_m = 1.0;
+  suppression_config.expansion_size_m = 0.5;
+  suppression_config.timeout_s = 90.0;
+  suppression_config.equivalence_tolerance = 0.3;
+  core->frontier_suppression_ =
+    std::make_unique<FrontierSuppression>(suppression_config);
+  core->frontier_suppression_->suppress_region(
+    core->frontier_with_goal_point(target, *first_resolved),
+    now_ns);
+
+  const auto second_resolved = core->resolve_dispatch_goal_point(target, current_pose);
+  EXPECT_FALSE(second_resolved.has_value());
 }
 
 }  // namespace

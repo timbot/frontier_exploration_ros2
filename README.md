@@ -1717,6 +1717,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `map_processing_rate_hz`                    | `double` | `1.0`   | Maximum `/map` processing rate for decision-map refresh and normal frontier scheduling                   | Set `<= 0.0` to process every map immediately; on first launch the node samples startup `/map` timing and caps the effective rate so it does not exceed the observed source rate; active-goal urgent preemption/completion checks can still react immediately without eagerly refreshing the decision map                    |
 | `return_to_start_on_complete`               | `bool`   | `true`  | Returns to the recorded start pose after frontier exhaustion                                             | Sends a regular navigation goal back to the saved start pose; packaged configs override this to `false`                                                                                                                                                                                                                      |
 | `all_frontiers_suppressed_behavior`         | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed                | Supported values: `stay`, `return_to_start`, `complete`; other values are normalized to `stay`; packaged configs override this to `return_to_start`                                                                                                                                                                          |
+| `dispatch_clearance_radius_m`               | `double` | `0.0`   | Optional footprint clearance radius for trimmed dispatch points                                         | When greater than zero, dispatch trimming only traverses and targets cells whose surrounding map/costmap neighborhood is below `occ_threshold`                                                                                                                                                                                |
 
 ### Frontier Suppression
 
@@ -1918,6 +1919,11 @@ frontier_explorer:
     # Distance used to treat a frontier region as recently visited.
     # Use if you are having navigation loops.
     frontier_visit_tolerance: 0.40
+
+    # Optional footprint clearance radius for trimmed dispatch points. When
+    # greater than zero, dispatch trimming only traverses/targets cells whose
+    # surrounding map/costmap neighborhood is below occ_threshold.
+    dispatch_clearance_radius_m: 0.0
 
     # --------------- Map Optimization --------------- #
 

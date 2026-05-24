@@ -65,6 +65,7 @@ struct FrontierExplorerCoreParams
   std::string map_topic{"map"};
   std::string costmap_topic{"global_costmap/costmap"};
   std::string local_costmap_topic{"local_costmap/costmap"};
+  std::string watchdog_event_topic{"navigation/watchdog_events"};
   std::string navigate_to_pose_action_name{"navigate_to_pose"};
   std::string global_frame{"map"};
   std::string robot_base_frame{"base_footprint"};
@@ -92,6 +93,7 @@ struct FrontierExplorerCoreParams
   double frontier_selection_min_distance{0.5};
   bool escape_enabled{false};
   double frontier_visit_tolerance{0.30};
+  double dispatch_clearance_radius_m{0.0};
   bool goal_preemption_enabled{false};
   bool goal_skip_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
@@ -162,6 +164,7 @@ public:
   void occupancyGridCallback(const OccupancyGrid2d & map_msg);
   void costmapCallback(const OccupancyGrid2d & map_msg);
   void localCostmapCallback(const OccupancyGrid2d & map_msg);
+  void handle_navigation_blocked_event(const std::string & reason);
   void ingestRawMapUpdate(const OccupancyGrid2d & map_msg);
   void handleUrgentRawMapUpdateForActiveGoal();
   void processPendingMapUpdate();
@@ -217,6 +220,11 @@ public:
   geometry_msgs::msg::PoseStamped build_goal_pose(
     const FrontierLike & target_frontier,
     const geometry_msgs::msg::Pose & current_pose) const;
+
+  std::optional<std::pair<double, double>> resolve_dispatch_goal_point(
+    const FrontierLike & target_frontier,
+    const geometry_msgs::msg::Pose & current_pose,
+    bool bypass_min_distance_dispatch = false) const;
 
   geometry_msgs::msg::PoseStamped build_dispatch_goal_pose(
     const FrontierLike & target_frontier,
@@ -481,6 +489,10 @@ private:
   double frontier_snapshot_min_goal_distance_for_pose(
     const geometry_msgs::msg::Pose & current_pose);
   void record_failed_frontier_attempt(const std::optional<FrontierLike> & frontier);
+  void suppress_failed_frontier_goal(
+    const std::optional<FrontierLike> & frontier,
+    const FrontierSequence & frontier_sequence,
+    const std::string & reason);
   void suppress_blocked_frontier_region(
     const FrontierLike & frontier,
     const std::string & reason);
