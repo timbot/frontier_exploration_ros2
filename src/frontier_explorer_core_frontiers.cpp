@@ -19,6 +19,7 @@ limitations under the License.
 #include "frontier_explorer_core_detail.hpp"
 #include "frontier_exploration_ros2/mrtsp_solver.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -147,9 +148,60 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   }
 
   FrontierSequence ordered_frontiers;
-  ordered_frontiers.reserve(order.size());
+  ordered_frontiers.reserve(frontiers.size());
+  std::vector<uint8_t> ordered_indices(frontiers.size(), 0U);
   for (const std::size_t index : order) {
-    if (index < frontiers.size()) {
+    if (index < frontiers.size() && !ordered_indices[index]) {
+      ordered_frontiers.push_back(frontiers[index]);
+      ordered_indices[index] = 1U;
+    }
+  }
+
+  if (ordered_frontiers.size() < frontiers.size()) {
+    std::vector<std::size_t> fallback_indices;
+    fallback_indices.reserve(frontiers.size() - ordered_frontiers.size());
+    for (std::size_t index = 0; index < frontiers.size(); ++index) {
+      if (!ordered_indices[index]) {
+        fallback_indices.push_back(index);
+      }
+    }
+
+    const auto start_score = [&](std::size_t index) {
+        double score = compute_mrtsp_start_cost(
+          candidates[index],
+          robot_state,
+          weights,
+          params.sensor_effective_range_m,
+          params.max_linear_speed_vmax,
+          params.max_angular_speed_wmax);
+        return std::isnan(score) ? std::numeric_limits<double>::infinity() : score;
+      };
+
+    std::sort(
+      fallback_indices.begin(),
+      fallback_indices.end(),
+      [&](std::size_t lhs, std::size_t rhs) {
+        constexpr double kScoreTieEpsilon = 1e-12;
+        const double lhs_score = start_score(lhs);
+        const double rhs_score = start_score(rhs);
+        const bool lhs_finite = std::isfinite(lhs_score);
+        const bool rhs_finite = std::isfinite(rhs_score);
+        if (lhs_finite != rhs_finite) {
+          return lhs_finite;
+        }
+        if (lhs_finite && std::abs(lhs_score - rhs_score) > kScoreTieEpsilon) {
+          return lhs_score < rhs_score;
+        }
+        if (!lhs_finite && lhs_score != rhs_score) {
+          return lhs_score < rhs_score;
+        }
+        if (candidates[lhs].size != candidates[rhs].size) {
+          return candidates[lhs].size > candidates[rhs].size;
+        }
+        return lhs < rhs;
+      });
+
+    for (const std::size_t index : fallback_indices) {
       ordered_frontiers.push_back(frontiers[index]);
     }
   }
@@ -550,6 +602,8 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
     std::max(0.0, params.frontier_selection_min_distance);
   const double min_robot_distance_sq = min_robot_distance * min_robot_distance;
   const double clearance_radius = std::max(0.0, params.dispatch_clearance_radius_m);
+  const bool enforce_costmap_reachability =
+    params.goal_skip_on_blocked_goal || clearance_radius > 0.0;
 
   const auto in_bounds = [width, height](int map_x, int map_y) {
       return map_x >= 0 && map_y >= 0 && map_x < width && map_y < height;
@@ -597,11 +651,13 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       if (world_blocked_in_grid(*map, world_point)) {
         return true;
       }
-      if (costmap.has_value() && world_blocked_in_grid(*costmap, world_point)) {
-        return true;
-      }
-      if (local_costmap.has_value() && world_blocked_in_grid(*local_costmap, world_point)) {
-        return true;
+      if (enforce_costmap_reachability) {
+        if (costmap.has_value() && world_blocked_in_grid(*costmap, world_point)) {
+          return true;
+        }
+        if (local_costmap.has_value() && world_blocked_in_grid(*local_costmap, world_point)) {
+          return true;
+        }
       }
       return false;
     };

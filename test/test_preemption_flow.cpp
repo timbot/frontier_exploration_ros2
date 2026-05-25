@@ -482,7 +482,7 @@ TEST(PreemptionFlowTests, MrtspDispatchRejectsTargetInsideMinimumDistance)
   EXPECT_FALSE(dispatched_request.has_value());
 }
 
-TEST(PreemptionFlowTests, MrtspDispatchTrimsBlockedTargetWhenBlockedGoalSkipIsDisabled)
+TEST(PreemptionFlowTests, MrtspDispatchLetsNav2TryTargetWhenBlockedGoalSkipIsDisabled)
 {
   FrontierExplorerCoreParams params;
   params.goal_skip_on_blocked_goal = false;
@@ -514,8 +514,8 @@ TEST(PreemptionFlowTests, MrtspDispatchTrimsBlockedTargetWhenBlockedGoalSkipIsDi
   ASSERT_EQ(dispatch_calls, 1);
   ASSERT_TRUE(dispatched_request.has_value());
   const auto & goal_position = dispatched_request->goal_pose.pose.position;
-  EXPECT_NE(dispatched_request->description.find("dispatch=("), std::string::npos);
-  EXPECT_NEAR(goal_position.x, 6.5, 1e-9);
+  EXPECT_EQ(dispatched_request->description.find("dispatch=("), std::string::npos);
+  EXPECT_NEAR(goal_position.x, 5.5, 1e-9);
   EXPECT_NEAR(goal_position.y, 5.5, 1e-9);
 
   int goal_map_x = 0;
@@ -526,7 +526,7 @@ TEST(PreemptionFlowTests, MrtspDispatchTrimsBlockedTargetWhenBlockedGoalSkipIsDi
     goal_map_x,
     goal_map_y));
   EXPECT_LT(core.map->getCost(goal_map_x, goal_map_y), params.occ_threshold);
-  EXPECT_LT(core.costmap->getCost(goal_map_x, goal_map_y), params.occ_threshold);
+  EXPECT_GE(core.costmap->getCost(goal_map_x, goal_map_y), params.occ_threshold);
 
   ASSERT_TRUE(dispatched_request->frontier.has_value());
   ASSERT_TRUE(dispatched_request->frontier->goal_point.has_value());
@@ -547,6 +547,7 @@ TEST(PreemptionFlowTests, MrtspDispatchTrimsBlockedTargetWhenBlockedGoalSkipIsDi
 TEST(PreemptionFlowTests, MrtspDispatchWaitsWhenNoNearbySafePointExists)
 {
   FrontierExplorerCoreParams params;
+  params.goal_skip_on_blocked_goal = true;
   params.frontier_selection_min_distance = 2.0;
 
   FrontierExplorerCore core(params, FrontierExplorerCoreCallbacks{});

@@ -95,7 +95,8 @@ std::unique_ptr<FrontierExplorerCore> make_suppression_core(
   int64_t * now_ns,
   int * dispatch_calls,
   std::vector<std::string> * info_logs = nullptr,
-  std::vector<std::string> * warn_logs = nullptr)
+  std::vector<std::string> * warn_logs = nullptr,
+  geometry_msgs::msg::Pose * current_pose = nullptr)
 {
   FrontierExplorerCoreParams params;
   params.frontier_suppression_enabled = true;
@@ -108,8 +109,9 @@ std::unique_ptr<FrontierExplorerCore> make_suppression_core(
 
   FrontierExplorerCoreCallbacks callbacks;
   callbacks.now_ns = [now_ns]() {return *now_ns;};
-  callbacks.get_current_pose = []() {
-      return std::optional<geometry_msgs::msg::Pose>(make_pose(1.0, 1.0));
+  callbacks.get_current_pose = [current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(
+        current_pose == nullptr ? make_pose(1.0, 1.0) : *current_pose);
     };
   callbacks.wait_for_action_server = [](double) {return true;};
   callbacks.dispatch_goal_request = [dispatch_calls](const GoalDispatchRequest &) {
@@ -178,6 +180,20 @@ TEST(FrontierSuppressionTests, ExpansionRingDoublesRegionAndMovesCenter)
 
   ASSERT_EQ(suppression.region_count(), 1U);
   EXPECT_DOUBLE_EQ(suppression.regions().front().center.first, 0.75);
+  EXPECT_DOUBLE_EQ(suppression.regions().front().center.second, 0.0);
+  EXPECT_DOUBLE_EQ(suppression.regions().front().side_length_m, 4.0);
+}
+
+TEST(FrontierSuppressionTests, ExpansionSizeIsRingWidthOnEachSide)
+{
+  FrontierSuppression suppression(FrontierSuppressionConfig{
+    1, 2.0, 1.0, 90.0, 20.0, 0.25, 8, 4, 0.3});
+
+  suppression.record_failed_attempt(make_candidate(0.0, 0.0), 1'000'000'000);
+  suppression.record_failed_attempt(make_candidate(1.75, 0.0), 2'000'000'000);
+
+  ASSERT_EQ(suppression.region_count(), 1U);
+  EXPECT_DOUBLE_EQ(suppression.regions().front().center.first, 0.875);
   EXPECT_DOUBLE_EQ(suppression.regions().front().center.second, 0.0);
   EXPECT_DOUBLE_EQ(suppression.regions().front().side_length_m, 4.0);
 }
@@ -281,6 +297,34 @@ TEST(FrontierSuppressionCoreTests, NoProgressTimeoutCanceledGoalCreatesSuppresse
     "");
 
   EXPECT_EQ(core->suppressed_region_count(), 1U);
+}
+
+TEST(FrontierSuppressionCoreTests, EuclideanGoalProgressDelaysNoProgressCancel)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  geometry_msgs::msg::Pose current_pose = make_pose(1.0, 1.0);
+  auto core = make_suppression_core(
+    &now_ns,
+    &dispatch_calls,
+    nullptr,
+    nullptr,
+    &current_pose);
+
+  core->try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 1);
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_response_callback(core->current_dispatch_id, fake_handle, true, "");
+  core->feedback_callback(10.0, core->current_dispatch_id);
+
+  now_ns = 6'000'000'000;
+  current_pose = make_pose(2.0, 2.0);
+  EXPECT_FALSE(core->evaluate_active_goal_progress_timeout());
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+
+  now_ns = 12'000'000'000;
+  EXPECT_TRUE(core->evaluate_active_goal_progress_timeout());
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
 }
 
 TEST(FrontierSuppressionCoreTests, AbortedFrontierSuppressesRegionBeforeRetryThreshold)
@@ -713,6 +757,42 @@ TEST(FrontierDispatchResolutionTests, PreservesReachableFrontierGoal)
   EXPECT_DOUBLE_EQ(resolved->second, 2.5);
 }
 
+TEST(FrontierDispatchResolutionTests, NoDispatchableCandidateSkipsWithoutSuppressionAndTriesFallback)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.frontier_suppression_attempt_threshold = 2;
+  core->params.frontier_selection_min_distance = 2.0;
+
+  std::optional<GoalDispatchRequest> captured_request;
+  core->callbacks.dispatch_goal_request =
+    [&dispatch_calls, &captured_request](const GoalDispatchRequest & request) {
+      dispatch_calls += 1;
+      captured_request = request;
+    };
+
+  const FrontierSequence frontiers{
+    make_candidate(1.2, 1.0),
+    make_candidate(5.0, 5.0),
+  };
+
+  const bool dispatched = core->send_frontier_goal(
+    frontiers,
+    make_pose(1.0, 1.0),
+    "test dispatch");
+
+  EXPECT_TRUE(dispatched);
+  EXPECT_EQ(dispatch_calls, 1);
+  EXPECT_EQ(core->suppression_attempt_count(), 0U);
+  EXPECT_EQ(core->suppressed_region_count(), 0U);
+  ASSERT_TRUE(captured_request.has_value());
+  ASSERT_TRUE(captured_request->frontier.has_value());
+  EXPECT_TRUE(core->are_frontiers_equivalent(captured_request->frontier, frontiers[1]));
+  EXPECT_DOUBLE_EQ(captured_request->goal_pose.pose.position.x, 5.0);
+  EXPECT_DOUBLE_EQ(captured_request->goal_pose.pose.position.y, 5.0);
+}
+
 TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeOccupancyWall)
 {
   int64_t now_ns = 0;
@@ -742,6 +822,7 @@ TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeCost
   int64_t now_ns = 0;
   int dispatch_calls = 0;
   auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.goal_skip_on_blocked_goal = true;
   auto map_msg = build_grid(10, 5, 0);
   auto costmap_msg = build_grid(10, 5, 0);
   for (int y = 0; y < 5; ++y) {
@@ -758,6 +839,30 @@ TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeCost
 
   ASSERT_TRUE(resolved.has_value());
   EXPECT_DOUBLE_EQ(resolved->first, 3.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, LetsNav2TryGoalBeyondCostmapWallWhenBlockedGoalSkipDisabled)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  auto map_msg = build_grid(10, 5, 0);
+  auto costmap_msg = build_grid(10, 5, 0);
+  for (int y = 0; y < 5; ++y) {
+    set_grid_cell(costmap_msg, 4, y, 100);
+  }
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 8.5);
   EXPECT_DOUBLE_EQ(resolved->second, 2.5);
 }
 

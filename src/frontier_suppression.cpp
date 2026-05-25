@@ -132,7 +132,7 @@ bool FrontierSuppression::point_in_expansion_ring(
   // outside the current square, so the square should grow rather than creating a second fragment.
   const SuppressedRegion outer_region{
     region.center,
-    region.side_length_m + config_.expansion_size_m,
+    region.side_length_m + (2.0 * config_.expansion_size_m),
     region.last_updated_ns,
   };
   return point_in_region(point, outer_region) && !point_in_region(point, region);

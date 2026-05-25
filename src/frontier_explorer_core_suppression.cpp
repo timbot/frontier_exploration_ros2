@@ -16,6 +16,7 @@ limitations under the License.
 
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -138,17 +139,31 @@ void FrontierExplorerCore::clear_active_goal_progress_state()
   if (frontier_suppression_) {
     frontier_suppression_->clear_goal_progress_tracking();
   }
+  clear_active_goal_euclidean_progress_state();
+}
+
+void FrontierExplorerCore::clear_active_goal_euclidean_progress_state()
+{
+  active_goal_best_euclidean_distance.reset();
+  active_goal_last_euclidean_progress_ns.reset();
 }
 
 void FrontierExplorerCore::start_active_goal_progress_tracking()
 {
   const int64_t now_ns = callbacks.now_ns();
+  start_active_goal_euclidean_progress_tracking(now_ns);
   FrontierSuppression * suppression = ensure_frontier_suppression();
   if (suppression_runtime_active(now_ns) && suppression && active_goal_kind == "frontier") {
     suppression->start_goal_progress_tracking(current_dispatch_id, now_ns);
     return;
   }
   clear_active_goal_progress_state();
+}
+
+void FrontierExplorerCore::start_active_goal_euclidean_progress_tracking(int64_t now_ns)
+{
+  clear_active_goal_euclidean_progress_state();
+  note_active_goal_euclidean_progress(now_ns);
 }
 
 void FrontierExplorerCore::note_active_goal_progress(double distance_remaining)
@@ -159,6 +174,47 @@ void FrontierExplorerCore::note_active_goal_progress(double distance_remaining)
       distance_remaining,
       callbacks.now_ns());
   }
+}
+
+void FrontierExplorerCore::note_active_goal_euclidean_progress(int64_t now_ns)
+{
+  const auto target_point = active_goal_target_point();
+  if (!target_point.has_value()) {
+    return;
+  }
+
+  const auto current_pose = callbacks.get_current_pose();
+  if (!current_pose.has_value()) {
+    return;
+  }
+
+  const double distance_to_goal = std::hypot(
+    target_point->first - current_pose->position.x,
+    target_point->second - current_pose->position.y);
+  if (!active_goal_best_euclidean_distance.has_value()) {
+    active_goal_best_euclidean_distance = distance_to_goal;
+    active_goal_last_euclidean_progress_ns = now_ns;
+    return;
+  }
+
+  if (
+    *active_goal_best_euclidean_distance - distance_to_goal >=
+    params.frontier_suppression_progress_epsilon_m)
+  {
+    active_goal_best_euclidean_distance = distance_to_goal;
+    active_goal_last_euclidean_progress_ns = now_ns;
+  }
+}
+
+bool FrontierExplorerCore::active_goal_euclidean_progress_recent(int64_t now_ns) const
+{
+  if (!active_goal_last_euclidean_progress_ns.has_value()) {
+    return false;
+  }
+
+  const int64_t timeout_ns =
+    static_cast<int64_t>(params.frontier_suppression_no_progress_timeout_s * 1e9);
+  return now_ns - *active_goal_last_euclidean_progress_ns < timeout_ns;
 }
 
 bool FrontierExplorerCore::evaluate_active_goal_progress_timeout()
@@ -179,6 +235,10 @@ bool FrontierExplorerCore::evaluate_active_goal_progress_timeout()
   suppression->prune_expired(now_ns);
   if (!suppression->is_tracking_dispatch(current_dispatch_id)) {
     suppression->start_goal_progress_tracking(current_dispatch_id, now_ns);
+    return false;
+  }
+  note_active_goal_euclidean_progress(now_ns);
+  if (active_goal_euclidean_progress_recent(now_ns)) {
     return false;
   }
   if (!suppression->mark_timeout_cancel_if_needed(current_dispatch_id, now_ns)) {

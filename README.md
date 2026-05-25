@@ -1340,7 +1340,7 @@ If another matured failed goal lands in the outer expansion band of an existing 
 
 ```text
 inner square  = C x C
-outer square  = (C + B) x (C + B)
+outer square  = (C + 2B) x (C + 2B)
 if g is in outer - inner:
   new_center = midpoint(old_center, g)
   new_side_length = 2 * C
@@ -1349,7 +1349,8 @@ if g is in outer - inner:
 Where:
 
 - `C` is the current region side length
-- `B` is `frontier_suppression_expansion_size_m`
+- `B` is `frontier_suppression_expansion_size_m`, measured outward from each
+  side of the current region
 
 Membership is evaluated with the selected goal point. The suppression policy does not use the centroid for region filtering.
 

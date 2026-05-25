@@ -274,11 +274,11 @@ TEST(MrtspSolverTests, InvalidMatrixReturnsEmptyOrderForFallback)
   EXPECT_TRUE(solve_bounded_horizon_mrtsp_order(matrix, 2U).empty());
 }
 
-TEST(MrtspSolverTests, GreedyModePreservesFullCandidateOrderingAndBypassesCacheReuse)
+TEST(MrtspSolverTests, DpModeAppendsFallbackCandidatesAndBypassesCacheReuse)
 {
-  // Greedy mode ignores DP pruning limits and keeps the full MRTSP candidate order.
-  // Changing the solver mode must invalidate the cache because the same frontier set
-  // can produce a shorter receding-horizon sequence in DP mode.
+  // DP mode still uses the bounded solver for its first dispatch choices, but the
+  // core appends fallback candidates so dispatch can skip stale blocked frontiers
+  // before waiting for another map update.
   FrontierExplorerCoreParams params;
   params.mrtsp_solver = "greedy";
   params.dp_solver_candidate_limit = 1U;
@@ -299,7 +299,8 @@ TEST(MrtspSolverTests, GreedyModePreservesFullCandidateOrderingAndBypassesCacheR
     frontiers,
     make_pose(0.0, 0.0));
 
-  EXPECT_EQ(dp_sequence.size(), 1U);
+  EXPECT_EQ(dp_sequence.size(), 3U);
+  EXPECT_TRUE(core.are_frontiers_equivalent(dp_sequence.front(), frontiers.front()));
   EXPECT_EQ(core.mrtsp_order_cache_misses, 2);
 }
 

@@ -924,7 +924,6 @@ bool FrontierExplorerCore::send_frontier_goal(
       callbacks.log_info(
         "Skipping unsafe frontier goal before dispatch: " + unsafe_reason +
         "; " + describe_frontier(candidate_frontier));
-      suppress_blocked_frontier_region(candidate_frontier, unsafe_reason);
       continue;
     }
 

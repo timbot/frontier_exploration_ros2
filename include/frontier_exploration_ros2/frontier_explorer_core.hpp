@@ -451,6 +451,8 @@ public:
   std::optional<std::string> active_goal_blocked_reason;
   std::optional<FrontierLike> distance_completed_frontier;
   std::optional<int64_t> last_low_gain_reselection_time_ns;
+  std::optional<double> active_goal_best_euclidean_distance;
+  std::optional<int64_t> active_goal_last_euclidean_progress_ns;
 
   // Replacement frontier debouncing and marker deduplication state.
   std::optional<FrontierLike> replacement_candidate_frontier;
@@ -497,9 +499,13 @@ private:
     const FrontierLike & frontier,
     const std::string & reason);
   void clear_active_goal_progress_state();
+  void clear_active_goal_euclidean_progress_state();
   void start_active_goal_progress_tracking();
+  void start_active_goal_euclidean_progress_tracking(int64_t now_ns);
   void commit_deferred_costmap_search_input_updates();
   void note_active_goal_progress(double distance_remaining);
+  void note_active_goal_euclidean_progress(int64_t now_ns);
+  bool active_goal_euclidean_progress_recent(int64_t now_ns) const;
   void reset_exploration_runtime_state(bool clear_maps);
 
   std::optional<DispatchContext> dispatch_context_for(int dispatch_id) const;
