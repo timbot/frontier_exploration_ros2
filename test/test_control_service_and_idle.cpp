@@ -149,6 +149,51 @@ TEST(ControlCoreSessionTests, StopAndStartSessionsPreserveOriginalStartPose)
   EXPECT_DOUBLE_EQ(core.start_pose->pose.position.y, persistent_start_pose.pose.position.y);
 }
 
+TEST(ExplorationBoundaryTests, FiltersFrontiersOutsideStartRadius)
+{
+  FrontierExplorerCoreParams params;
+  params.exploration_boundary_radius_m = 1.0;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+
+  FrontierExplorerCore core(params, callbacks);
+  core.record_start_pose(make_pose(0.0, 0.0));
+
+  const FrontierSequence filtered = core.filter_frontiers_for_boundary({
+      make_frontier(0.5, 0.0),
+      make_frontier(1.0, 0.0),
+      make_frontier(1.5, 0.0),
+    });
+
+  ASSERT_EQ(filtered.size(), 2U);
+  EXPECT_DOUBLE_EQ(core.frontier_position(filtered[0]).first, 0.5);
+  EXPECT_DOUBLE_EQ(core.frontier_position(filtered[1]).first, 1.0);
+}
+
+TEST(ExplorationBoundaryTests, DispatchRejectsOutOfBoundaryTarget)
+{
+  FrontierExplorerCoreParams params;
+  params.exploration_boundary_radius_m = 1.0;
+  params.frontier_selection_min_distance = 0.0;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 10, 0));
+  core.costmap = OccupancyGrid2d(build_grid(10, 10, 0));
+  const auto start_pose = make_pose(1.0, 1.0);
+  core.record_start_pose(start_pose);
+
+  EXPECT_TRUE(core.resolve_dispatch_goal_point(
+      make_frontier(1.5, 1.0),
+      start_pose).has_value());
+  EXPECT_FALSE(core.resolve_dispatch_goal_point(
+      make_frontier(2.5, 1.0),
+      start_pose).has_value());
+}
+
 class FrontierControlNodeTests : public ::testing::Test
 {
 protected:

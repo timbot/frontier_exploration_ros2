@@ -119,6 +119,7 @@ private:
   bool control_service_enabled_{true};
   bool map_qos_autodetect_on_startup_{false};
   double map_qos_autodetect_timeout_s_{2.0};
+  int watchdog_collision_stop_block_threshold_{0};
 
   enum class RuntimeState
   {

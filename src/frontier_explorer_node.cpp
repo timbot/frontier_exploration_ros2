@@ -31,6 +31,7 @@ limitations under the License.
 #include <cstddef>
 #include <cmath>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -45,6 +46,22 @@ namespace
 
 constexpr std::size_t kStartupMapRateSampleCount = 3;
 constexpr double kStartupMapRateStabilityTolerance = 0.25;
+
+std::optional<int> extract_json_int_field(
+  const std::string & payload,
+  const std::string & field)
+{
+  const std::regex pattern("\"" + field + "\"\\s*:\\s*(-?[0-9]+)");
+  std::smatch match;
+  if (!std::regex_search(payload, match, pattern) || match.size() < 2) {
+    return std::nullopt;
+  }
+  try {
+    return std::stoi(match[1].str());
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
 
 // Adapts Nav2 goal handle API to the core's transport-agnostic interface.
 class NavigateGoalHandleAdapter : public GoalHandleInterface
@@ -101,6 +118,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("local_costmap_qos_durability", "inherit");
   this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
   this->declare_parameter<int>("local_costmap_qos_depth", -1);
+  this->declare_parameter<int>("watchdog_collision_stop_block_threshold", 0);
   this->declare_parameter<double>("frontier_marker_scale", 0.15);
   this->declare_parameter<bool>("autostart", true);
   this->declare_parameter<bool>("control_service_enabled", true);
@@ -113,6 +131,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("weight_gain_ws", 1.0);
   this->declare_parameter<double>("max_linear_speed_vmax", 0.5);
   this->declare_parameter<double>("max_angular_speed_wmax", 1.0);
+  this->declare_parameter<double>("exploration_boundary_radius_m", 0.0);
   // Solver selection stays MRTSP-specific, while the bounded-DP limits are named
   // by algorithm so the same controls can describe other DP-based route policies.
   this->declare_parameter<std::string>("mrtsp_solver", "dp");
@@ -182,6 +201,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   params_.weight_gain_ws = this->get_parameter("weight_gain_ws").as_double();
   params_.max_linear_speed_vmax = this->get_parameter("max_linear_speed_vmax").as_double();
   params_.max_angular_speed_wmax = this->get_parameter("max_angular_speed_wmax").as_double();
+  params_.exploration_boundary_radius_m = this->get_parameter(
+    "exploration_boundary_radius_m").as_double();
   params_.mrtsp_solver = this->get_parameter("mrtsp_solver").as_string();
   // ROS parameters are read as signed integers, then converted to positive size_t
   // limits before they enter the solver configuration.
@@ -270,6 +291,9 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   map_qos_autodetect_timeout_s_ = std::max(
     0.2,
     this->get_parameter("map_qos_autodetect_timeout_s").as_double());
+  watchdog_collision_stop_block_threshold_ = std::max<int>(
+    0,
+    this->get_parameter("watchdog_collision_stop_block_threshold").as_int());
   // Timeout lower bound avoids too-fast timer churn in startup autodetect mode.
 
   navigate_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(
@@ -1169,12 +1193,35 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
   if (runtime_state_ != RuntimeState::RUNNING || !core_) {
     return;
   }
-  if (msg->data.find("nav_blocked") == std::string::npos) {
+  if (msg->data.find("nav_blocked") != std::string::npos) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Navigation watchdog reported blocked exploration goal: %s",
+      msg->data.c_str());
+    core_->handle_navigation_blocked_event(msg->data);
     return;
   }
+
+  if (
+    watchdog_collision_stop_block_threshold_ <= 0 ||
+    msg->data.find("collision_stop") == std::string::npos)
+  {
+    return;
+  }
+
+  const int recent_collision_stops = extract_json_int_field(
+    msg->data,
+    "recent_collision_stops").value_or(1);
+  if (recent_collision_stops < watchdog_collision_stop_block_threshold_) {
+    return;
+  }
+
   RCLCPP_WARN(
     this->get_logger(),
-    "Navigation watchdog reported blocked exploration goal: %s",
+    "Navigation watchdog reported repeated collision stops "
+    "(%d >= %d); treating active frontier as blocked: %s",
+    recent_collision_stops,
+    watchdog_collision_stop_block_threshold_,
     msg->data.c_str());
   core_->handle_navigation_blocked_event(msg->data);
 }

@@ -82,6 +82,7 @@ struct FrontierExplorerCoreParams
   double weight_gain_ws{1.0};
   double max_linear_speed_vmax{0.5};
   double max_angular_speed_wmax{1.0};
+  double exploration_boundary_radius_m{0.0};
   // MRTSP can traverse its cost matrix greedily or with bounded dynamic programming.
   std::string mrtsp_solver{"dp"};
   // DP limits are algorithm-level controls for the MRTSP solver.
@@ -205,6 +206,13 @@ public:
     const geometry_msgs::msg::Pose & current_pose) const;
 
   void record_start_pose(const geometry_msgs::msg::Pose & current_pose);
+  [[nodiscard]] bool exploration_boundary_enabled() const;
+  [[nodiscard]] bool point_within_exploration_boundary(
+    double wx,
+    double wy,
+    double margin_m = 0.0) const;
+  [[nodiscard]] FrontierSequence filter_frontiers_for_boundary(
+    const FrontierSequence & frontiers) const;
 
   bool are_frontiers_equivalent(
     const std::optional<FrontierLike> & first_frontier,

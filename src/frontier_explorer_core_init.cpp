@@ -63,6 +63,9 @@ FrontierExplorerCore::FrontierExplorerCore(
   params.weight_gain_ws = std::max(0.0, params.weight_gain_ws);
   params.max_linear_speed_vmax = std::max(1e-6, params.max_linear_speed_vmax);
   params.max_angular_speed_wmax = std::max(1e-6, params.max_angular_speed_wmax);
+  params.exploration_boundary_radius_m = std::max(
+    0.0,
+    params.exploration_boundary_radius_m);
   // Solver bounds are clamped once at core construction so ordering code can assume
   // positive limits while still honoring smaller candidate sets at runtime.
   params.dp_solver_candidate_limit = std::clamp<std::size_t>(

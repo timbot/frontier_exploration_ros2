@@ -37,7 +37,8 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   const FrontierSequence & frontiers,
   const geometry_msgs::msg::Pose & current_pose) const
 {
-  if (frontiers.empty()) {
+  const FrontierSequence bounded_frontiers = filter_frontiers_for_boundary(frontiers);
+  if (bounded_frontiers.empty()) {
     return {};
   }
 
@@ -47,7 +48,7 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   const int yaw_bucket = detail::quantize_bucket(
     detail::yaw_from_quaternion(current_pose.orientation),
     detail::kPi / 12.0);
-  const FrontierSignature signature = frontier_signature(frontiers);
+  const FrontierSignature signature = frontier_signature(bounded_frontiers);
 
   // Solver mode and DP bounds participate in the cache key because the same frontier
   // geometry can yield a different order when the route horizon or candidate pool changes.
@@ -68,12 +69,12 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     const_cast<FrontierExplorerCore *>(this)->mrtsp_order_cache_hits += 1;
     if (debug_outputs_enabled()) {
       callbacks.log_debug(
-        "mrtsp_order_cache: hit, frontiers=" + std::to_string(frontiers.size()));
+        "mrtsp_order_cache: hit, frontiers=" + std::to_string(bounded_frontiers.size()));
     }
     return mrtsp_order_cache->frontier_sequence;
   }
 
-  const std::vector<FrontierCandidate> & candidates = frontiers;
+  const std::vector<FrontierCandidate> & candidates = bounded_frontiers;
 
   RobotState robot_state;
   robot_state.position = {current_pose.position.x, current_pose.position.y};
@@ -148,19 +149,19 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   }
 
   FrontierSequence ordered_frontiers;
-  ordered_frontiers.reserve(frontiers.size());
-  std::vector<uint8_t> ordered_indices(frontiers.size(), 0U);
+  ordered_frontiers.reserve(bounded_frontiers.size());
+  std::vector<uint8_t> ordered_indices(bounded_frontiers.size(), 0U);
   for (const std::size_t index : order) {
-    if (index < frontiers.size() && !ordered_indices[index]) {
-      ordered_frontiers.push_back(frontiers[index]);
+    if (index < bounded_frontiers.size() && !ordered_indices[index]) {
+      ordered_frontiers.push_back(bounded_frontiers[index]);
       ordered_indices[index] = 1U;
     }
   }
 
-  if (ordered_frontiers.size() < frontiers.size()) {
+  if (ordered_frontiers.size() < bounded_frontiers.size()) {
     std::vector<std::size_t> fallback_indices;
-    fallback_indices.reserve(frontiers.size() - ordered_frontiers.size());
-    for (std::size_t index = 0; index < frontiers.size(); ++index) {
+    fallback_indices.reserve(bounded_frontiers.size() - ordered_frontiers.size());
+    for (std::size_t index = 0; index < bounded_frontiers.size(); ++index) {
       if (!ordered_indices[index]) {
         fallback_indices.push_back(index);
       }
@@ -202,7 +203,7 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
       });
 
     for (const std::size_t index : fallback_indices) {
-      ordered_frontiers.push_back(frontiers[index]);
+      ordered_frontiers.push_back(bounded_frontiers[index]);
     }
   }
 
@@ -227,7 +228,7 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   mutable_self.mrtsp_order_cache_misses += 1;
   if (debug_outputs_enabled()) {
     callbacks.log_debug(
-      "mrtsp_order_cache: miss, frontiers=" + std::to_string(frontiers.size()) +
+      "mrtsp_order_cache: miss, frontiers=" + std::to_string(bounded_frontiers.size()) +
       ", ordered=" + std::to_string(ordered_frontiers.size()) +
       ", solver=" + params.mrtsp_solver);
   }
@@ -337,7 +338,8 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
 
   FrontierSnapshot snapshot;
   // Convert low-level search output into policy-facing representation + cache key metadata.
-  snapshot.frontiers = to_frontier_sequence(search_result.frontiers);
+  const FrontierSequence raw_frontiers = to_frontier_sequence(search_result.frontiers);
+  snapshot.frontiers = filter_frontiers_for_boundary(raw_frontiers);
   snapshot.signature = frontier_signature(snapshot.frontiers);
   snapshot.map_generation = map_generation;
   snapshot.decision_map_generation = decision_map_generation;
@@ -349,7 +351,7 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
   frontier_snapshot = snapshot;
   frontier_snapshot_cache_misses += 1;
   if (debug_outputs_enabled() && map.has_value()) {
-    std::size_t raw_frontier_count = snapshot.frontiers.size();
+    std::size_t raw_frontier_count = raw_frontiers.size();
     if (frontier_map_optimization_enabled()) {
       const FrontierSearchOptions options = frontier_search_options();
       if (
@@ -388,6 +390,11 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
     callbacks.log_debug(
       "frontier_counts: raw=" + std::to_string(raw_frontier_count) +
       ", decision=" + std::to_string(snapshot.frontiers.size()));
+  }
+  if (snapshot.frontiers.size() != raw_frontiers.size()) {
+    callbacks.log_info(
+      "Filtered " + std::to_string(raw_frontiers.size() - snapshot.frontiers.size()) +
+      " frontier(s) outside the exploration boundary");
   }
   log_frontier_snapshot_stats(snapshot.frontiers, duration_ms, false);
   return snapshot;
@@ -473,6 +480,43 @@ void FrontierExplorerCore::record_start_pose(const geometry_msgs::msg::Pose & cu
   callbacks.log_info(oss.str());
 }
 
+bool FrontierExplorerCore::exploration_boundary_enabled() const
+{
+  return params.exploration_boundary_radius_m > 0.0 && start_pose.has_value();
+}
+
+bool FrontierExplorerCore::point_within_exploration_boundary(
+  double wx,
+  double wy,
+  double margin_m) const
+{
+  if (!exploration_boundary_enabled()) {
+    return true;
+  }
+  const double radius = std::max(0.0, params.exploration_boundary_radius_m - margin_m);
+  const double dx = wx - start_pose->pose.position.x;
+  const double dy = wy - start_pose->pose.position.y;
+  return (dx * dx + dy * dy) <= (radius * radius + 1e-9);
+}
+
+FrontierSequence FrontierExplorerCore::filter_frontiers_for_boundary(
+  const FrontierSequence & frontiers) const
+{
+  if (!exploration_boundary_enabled()) {
+    return frontiers;
+  }
+
+  FrontierSequence filtered;
+  filtered.reserve(frontiers.size());
+  for (const auto & frontier : frontiers) {
+    const auto point = frontier_position(frontier);
+    if (point_within_exploration_boundary(point.first, point.second)) {
+      filtered.push_back(frontier);
+    }
+  }
+  return filtered;
+}
+
 bool FrontierExplorerCore::are_frontiers_equivalent(
   const std::optional<FrontierLike> & first_frontier,
   const std::optional<FrontierLike> & second_frontier) const
@@ -554,6 +598,9 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   bool bypass_min_distance_dispatch) const
 {
   const auto target_point = frontier_position(target_frontier);
+  if (!point_within_exploration_boundary(target_point.first, target_point.second)) {
+    return std::nullopt;
+  }
   if (!map.has_value()) {
     return target_point;
   }
@@ -676,7 +723,9 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
         return false;
       }
       const auto world_point = cell_world(map_x, map_y);
-      return !point_suppressed(world_point) && !point_blocked(world_point);
+      return point_within_exploration_boundary(world_point.first, world_point.second) &&
+             !point_suppressed(world_point) &&
+             !point_blocked(world_point);
     };
 
   const auto cell_dispatchable = [&](int map_x, int map_y) {
