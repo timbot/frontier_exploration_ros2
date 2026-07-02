@@ -98,8 +98,41 @@ void FrontierExplorerCore::refresh_decision_map()
   }
 }
 
+bool FrontierExplorerCore::accept_global_frame_grid(
+  const OccupancyGrid2d & grid,
+  const char * grid_label)
+{
+  if (!grid.valid()) {
+    return true;
+  }
+  const std::string & frame_id = grid.map().header.frame_id;
+  if (frame_id.empty() || frame_id == params.global_frame) {
+    return true;
+  }
+
+  frame_mismatch_rejections += 1;
+  const int64_t now = callbacks.now_ns();
+  const auto throttle_ns =
+    static_cast<int64_t>(frame_mismatch_log_throttle_seconds * 1e9);
+  if (
+    !last_frame_mismatch_log_time_ns.has_value() ||
+    now - *last_frame_mismatch_log_time_ns >= throttle_ns)
+  {
+    last_frame_mismatch_log_time_ns = now;
+    callbacks.log_error(
+      std::string("Ignoring ") + grid_label + " update in frame '" + frame_id +
+      "': the frontier explorer global_frame is '" + params.global_frame +
+      "'. Align the publisher frame and the global_frame parameter " +
+      "(rejections so far: " + std::to_string(frame_mismatch_rejections) + ")");
+  }
+  return false;
+}
+
 void FrontierExplorerCore::ingestRawMapUpdate(const OccupancyGrid2d & map_msg)
 {
+  if (!accept_global_frame_grid(map_msg, "map")) {
+    return;
+  }
   map = map_msg;
   map_generation += 1;
   decision_map_dirty = true;
@@ -173,6 +206,9 @@ void FrontierExplorerCore::processPendingMapUpdate()
 
 void FrontierExplorerCore::occupancyGridCallback(const OccupancyGrid2d & map_msg)
 {
+  if (!accept_global_frame_grid(map_msg, "map")) {
+    return;
+  }
   ingestRawMapUpdate(map_msg);
   refresh_decision_map();
   if (goal_in_progress && active_goal_kind == "frontier") {
@@ -189,6 +225,9 @@ void FrontierExplorerCore::occupancyGridCallback(const OccupancyGrid2d & map_msg
 
 void FrontierExplorerCore::costmapCallback(const OccupancyGrid2d & map_msg)
 {
+  if (!accept_global_frame_grid(map_msg, "global costmap")) {
+    return;
+  }
   if (active_frontier_goal_in_progress()) {
     costmap = map_msg;
     pending_costmap_search_input_update = true;

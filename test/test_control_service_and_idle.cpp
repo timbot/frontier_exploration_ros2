@@ -149,6 +149,166 @@ TEST(ControlCoreSessionTests, StopAndStartSessionsPreserveOriginalStartPose)
   EXPECT_DOUBLE_EQ(core.start_pose->pose.position.y, persistent_start_pose.pose.position.y);
 }
 
+TEST(GlobalFrameConsistencyTests, RejectsMapAndCostmapUpdatesInWrongFrame)
+{
+  std::vector<std::string> errors;
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  callbacks.log_error = [&errors](const std::string & message) {
+      errors.push_back(message);
+    };
+  FrontierExplorerCore core(FrontierExplorerCoreParams{}, callbacks);
+
+  auto wrong_frame_grid = build_grid(10, 10, 0);
+  wrong_frame_grid.header.frame_id = "odom";
+
+  core.occupancyGridCallback(OccupancyGrid2d(wrong_frame_grid));
+  EXPECT_FALSE(core.map.has_value());
+  EXPECT_EQ(core.map_generation, 0);
+
+  core.costmapCallback(OccupancyGrid2d(wrong_frame_grid));
+  EXPECT_FALSE(core.costmap.has_value());
+  EXPECT_EQ(core.costmap_generation, 0);
+
+  core.ingestRawMapUpdate(OccupancyGrid2d(wrong_frame_grid));
+  EXPECT_FALSE(core.map.has_value());
+
+  EXPECT_EQ(core.frame_mismatch_rejections, 3);
+  // now_ns is frozen, so the second and third rejections are throttled.
+  ASSERT_EQ(errors.size(), 1U);
+  EXPECT_NE(errors[0].find("'odom'"), std::string::npos);
+  EXPECT_NE(errors[0].find("'map'"), std::string::npos);
+}
+
+TEST(GlobalFrameConsistencyTests, AcceptsMatchingAndUnsetFrames)
+{
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(FrontierExplorerCoreParams{}, callbacks);
+  core.stop_exploration_session("test stop");
+
+  auto map_frame_grid = build_grid(10, 10, 0);
+  map_frame_grid.header.frame_id = "map";
+  core.occupancyGridCallback(OccupancyGrid2d(map_frame_grid));
+  EXPECT_TRUE(core.map.has_value());
+  EXPECT_EQ(core.map_generation, 1);
+
+  auto unset_frame_grid = build_grid(10, 10, 0);
+  core.costmapCallback(OccupancyGrid2d(unset_frame_grid));
+  EXPECT_TRUE(core.costmap.has_value());
+  EXPECT_EQ(core.frame_mismatch_rejections, 0);
+}
+
+TEST(GlobalFrameConsistencyTests, LocalCostmapMayUseDifferentFrame)
+{
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(FrontierExplorerCoreParams{}, callbacks);
+  core.stop_exploration_session("test stop");
+
+  auto odom_grid = build_grid(10, 10, 0);
+  odom_grid.header.frame_id = "odom";
+  core.localCostmapCallback(OccupancyGrid2d(odom_grid));
+  EXPECT_TRUE(core.local_costmap.has_value());
+  EXPECT_EQ(core.frame_mismatch_rejections, 0);
+}
+
+TEST(GlobalFrameConsistencyTests, MismatchLoggingResumesAfterThrottleWindow)
+{
+  int64_t now_ns = 0;
+  std::vector<std::string> errors;
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.log_error = [&errors](const std::string & message) {
+      errors.push_back(message);
+    };
+  FrontierExplorerCore core(FrontierExplorerCoreParams{}, callbacks);
+
+  auto wrong_frame_grid = build_grid(10, 10, 0);
+  wrong_frame_grid.header.frame_id = "odom";
+
+  core.occupancyGridCallback(OccupancyGrid2d(wrong_frame_grid));
+  now_ns += int64_t{1'000'000'000};
+  core.occupancyGridCallback(OccupancyGrid2d(wrong_frame_grid));
+  EXPECT_EQ(errors.size(), 1U);
+
+  now_ns += int64_t{10'000'000'000};
+  core.occupancyGridCallback(OccupancyGrid2d(wrong_frame_grid));
+  EXPECT_EQ(errors.size(), 2U);
+  EXPECT_EQ(core.frame_mismatch_rejections, 3);
+}
+
+nav_msgs::msg::OccupancyGrid build_footprint_seed_grid(int fill_value)
+{
+  // 2 m x 2 m grid at 5 cm resolution centered on the robot with a free
+  // disk (r = 0.3 m) around the origin, mirroring the seeded footprint at
+  // the start of a depth-only bootstrap.
+  auto grid = build_grid(40, 40, fill_value);
+  grid.info.resolution = 0.05;
+  grid.info.origin.position.x = -1.0;
+  grid.info.origin.position.y = -1.0;
+  for (int y = 0; y < 40; ++y) {
+    for (int x = 0; x < 40; ++x) {
+      const double wx = -1.0 + (static_cast<double>(x) + 0.5) * 0.05;
+      const double wy = -1.0 + (static_cast<double>(y) + 0.5) * 0.05;
+      if (wx * wx + wy * wy <= 0.3 * 0.3) {
+        grid.data[static_cast<std::size_t>(y) * 40 + static_cast<std::size_t>(x)] = 0;
+      }
+    }
+  }
+  return grid;
+}
+
+TEST(DispatchGoalPointTests, CloseFrontierStillResolvesMinDistanceDispatchPoint)
+{
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(params, callbacks);
+
+  // Unknown everywhere beyond the seeded footprint: unknown cells are
+  // traversable for dispatch resolution, so a valid dispatch cell exists.
+  core.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+
+  const auto pose = make_pose(0.0, 0.0);
+  const auto frontier = make_frontier(0.21, 0.10, 80);
+  const auto dispatch_point = core.resolve_dispatch_goal_point(frontier, pose, false);
+
+  ASSERT_TRUE(dispatch_point.has_value());
+  const double robot_distance_sq =
+    dispatch_point->first * dispatch_point->first +
+    dispatch_point->second * dispatch_point->second;
+  EXPECT_GE(robot_distance_sq, 0.4 * 0.4 - 1e-9);
+  const double target_dx = dispatch_point->first - 0.21;
+  const double target_dy = dispatch_point->second - 0.10;
+  EXPECT_LE(target_dx * target_dx + target_dy * target_dy, 0.35 * 0.35);
+}
+
+TEST(DispatchGoalPointTests, CloseFrontierWithoutFarTraversableCellsResolvesNothing)
+{
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(params, callbacks);
+
+  // Occupied everywhere beyond the seeded footprint: every candidate cell at
+  // or beyond the min dispatch distance is blocked, so the min-distance
+  // constraint must still yield no dispatch point.
+  core.map = OccupancyGrid2d(build_footprint_seed_grid(100));
+
+  const auto pose = make_pose(0.0, 0.0);
+  const auto frontier = make_frontier(0.21, 0.10, 80);
+  const auto dispatch_point = core.resolve_dispatch_goal_point(frontier, pose, false);
+
+  EXPECT_FALSE(dispatch_point.has_value());
+}
+
 TEST(ExplorationBoundaryTests, FiltersFrontiersOutsideStartRadius)
 {
   FrontierExplorerCoreParams params;

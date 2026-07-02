@@ -618,14 +618,12 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
     return std::nullopt;
   }
 
-  if (!bypass_min_distance_dispatch && params.frontier_selection_min_distance > 0.0) {
-    const double robot_distance = std::hypot(
-      target_point.first - current_pose.position.x,
-      target_point.second - current_pose.position.y);
-    if (robot_distance < params.frontier_selection_min_distance) {
-      return std::nullopt;
-    }
-  }
+  // A frontier reference closer than frontier_selection_min_distance is NOT
+  // rejected here: the BFS below can still resolve a dispatch cell that
+  // satisfies the min distance (cell_dispatchable / target_cell_dispatchable
+  // enforce it per cell). Rejecting on the reference distance alone starves
+  // dispatch entirely when the only frontier hugs the robot, e.g. the ring
+  // around the seeded footprint at the start of a depth-only bootstrap.
 
   int robot_map_x = 0;
   int robot_map_y = 0;

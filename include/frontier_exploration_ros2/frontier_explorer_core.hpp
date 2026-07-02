@@ -167,6 +167,10 @@ public:
   void localCostmapCallback(const OccupancyGrid2d & map_msg);
   void handle_navigation_blocked_event(const std::string & reason);
   void ingestRawMapUpdate(const OccupancyGrid2d & map_msg);
+  // Map and global costmap coordinates are interpreted directly in
+  // params.global_frame; a grid published in any other frame would silently
+  // offset every frontier and dispatch goal by the frame correction.
+  bool accept_global_frame_grid(const OccupancyGrid2d & grid, const char * grid_label);
   void handleUrgentRawMapUpdateForActiveGoal();
   void processPendingMapUpdate();
 
@@ -382,6 +386,9 @@ public:
   int frontier_snapshot_cache_misses{0};
   double frontier_stats_log_throttle_seconds{2.0};
   std::optional<int64_t> last_frontier_stats_log_time_ns;
+  double frame_mismatch_log_throttle_seconds{5.0};
+  std::optional<int64_t> last_frame_mismatch_log_time_ns;
+  int frame_mismatch_rejections{0};
 
   struct RawFrontierDebugCacheEntry
   {
