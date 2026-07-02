@@ -144,6 +144,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<bool>("escape_enabled", false);
   this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
   this->declare_parameter<double>("dispatch_clearance_radius_m", 0.0);
+  this->declare_parameter<bool>("dispatch_requires_known_free_costmap", false);
+  this->declare_parameter<double>("dispatch_costmap_cost_penalty_m", 0.0);
   this->declare_parameter<bool>("goal_preemption_enabled", false);
   this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
   this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
@@ -222,6 +224,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   params_.escape_enabled = this->get_parameter("escape_enabled").as_bool();
   params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
   params_.dispatch_clearance_radius_m = this->get_parameter("dispatch_clearance_radius_m").as_double();
+  params_.dispatch_requires_known_free_costmap = this->get_parameter(
+    "dispatch_requires_known_free_costmap").as_bool();
+  params_.dispatch_costmap_cost_penalty_m = this->get_parameter(
+    "dispatch_costmap_cost_penalty_m").as_double();
   params_.goal_preemption_enabled = this->get_parameter(
     "goal_preemption_enabled").as_bool();
   params_.goal_skip_on_blocked_goal = this->get_parameter("goal_skip_on_blocked_goal").as_bool();

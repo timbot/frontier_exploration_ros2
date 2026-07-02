@@ -444,8 +444,12 @@ TEST(PreemptionFlowTests, DispatchSkipImmediatelySuppressesBlockedFrontierRegion
   EXPECT_EQ(core.suppressed_region_count(), 1U);
 }
 
-TEST(PreemptionFlowTests, MrtspDispatchRejectsTargetInsideMinimumDistance)
+TEST(PreemptionFlowTests, MrtspDispatchAdjustsTargetInsideMinimumDistance)
 {
+  // A frontier inside frontier_selection_min_distance is no longer
+  // rejected outright: dispatch resolves the nearest traversable cell
+  // that satisfies the min distance, so a lone too-close frontier (e.g.
+  // the seeded-footprint ring at bootstrap start) cannot starve dispatch.
   FrontierExplorerCoreParams params;
   params.frontier_selection_min_distance = 1.0;
   params.frontier_visit_tolerance = 1.0;
@@ -476,10 +480,13 @@ TEST(PreemptionFlowTests, MrtspDispatchRejectsTargetInsideMinimumDistance)
       8},
   };
 
-  EXPECT_FALSE(core.send_frontier_goal(frontier_sequence, make_pose(5.1, 5.5), "Sending frontier goal"));
+  EXPECT_TRUE(core.send_frontier_goal(frontier_sequence, make_pose(5.1, 5.5), "Sending frontier goal"));
 
-  EXPECT_EQ(dispatch_calls, 0);
-  EXPECT_FALSE(dispatched_request.has_value());
+  EXPECT_EQ(dispatch_calls, 1);
+  ASSERT_TRUE(dispatched_request.has_value());
+  const double robot_dx = dispatched_request->goal_pose.pose.position.x - 5.1;
+  const double robot_dy = dispatched_request->goal_pose.pose.position.y - 5.5;
+  EXPECT_GE(robot_dx * robot_dx + robot_dy * robot_dy, 1.0 - 1e-9);
 }
 
 TEST(PreemptionFlowTests, MrtspDispatchLetsNav2TryTargetWhenBlockedGoalSkipIsDisabled)

@@ -1007,6 +1007,47 @@ bool FrontierExplorerCore::send_frontier_goal(
     dispatch_description);
 }
 
+std::string FrontierExplorerCore::describe_dispatch_probe(
+  const geometry_msgs::msg::Pose & goal_pose) const
+{
+  const std::pair<double, double> goal_point{
+    goal_pose.position.x,
+    goal_pose.position.y,
+  };
+  const auto grid_value =
+    [&goal_point](const std::optional<OccupancyGrid2d> & grid) -> std::string {
+      if (!grid.has_value()) {
+        return "none";
+      }
+      int grid_x = 0;
+      int grid_y = 0;
+      if (!grid->worldToMapNoThrow(
+          goal_point.first,
+          goal_point.second,
+          grid_x,
+          grid_y))
+      {
+        return "out_of_bounds";
+      }
+      return std::to_string(grid->getCost(grid_x, grid_y));
+    };
+
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2)
+      << "map=" << grid_value(map)
+      << " costmap=" << grid_value(costmap);
+  std::optional<geometry_msgs::msg::Pose> pose;
+  if (callbacks.get_current_pose) {
+    pose = callbacks.get_current_pose();
+  }
+  if (pose.has_value()) {
+    oss << " robot_distance_m=" << std::hypot(
+      goal_point.first - pose->position.x,
+      goal_point.second - pose->position.y);
+  }
+  return oss.str();
+}
+
 void FrontierExplorerCore::dispatch_goal_request(
   const std::string & action_name,
   const geometry_msgs::msg::PoseStamped & goal_pose,
@@ -1042,6 +1083,7 @@ void FrontierExplorerCore::dispatch_goal_request(
     frontier,
     frontier_sequence,
     action_name,
+    describe_dispatch_probe(goal_pose.pose),
   };
 
   callbacks.dispatch_goal_request(GoalDispatchRequest{
@@ -1195,17 +1237,21 @@ void FrontierExplorerCore::get_result_callback(
         // frontiers are suppressed. If Nav2 cannot plan it, do not thrash.
         suppressed_return_to_start_started = true;
       }
+      const std::string dispatch_probe_suffix =
+        context.has_value() && !context->dispatch_probe.empty() ?
+        ", dispatch_probe=[" + context->dispatch_probe + "]" :
+        std::string{};
       if (goal_kind == "frontier") {
         suppress_failed_frontier_goal(
           context.has_value() ? context->frontier : std::optional<FrontierLike>{},
           frontier_sequence,
           "Frontier goal failed with status " + detail::status_to_string(status) +
-          ", error_code=" + std::to_string(error_code));
+          ", error_code=" + std::to_string(error_code) + dispatch_probe_suffix);
       }
       callbacks.log_warn(
         goal_kind + " finished with status " + detail::status_to_string(status) +
         ", error_code=" + std::to_string(error_code) +
-        ", error_msg='" + error_message + "'");
+        ", error_msg='" + error_message + "'" + dispatch_probe_suffix);
     }
   } else {
     if (dispatch_id != current_dispatch_id) {

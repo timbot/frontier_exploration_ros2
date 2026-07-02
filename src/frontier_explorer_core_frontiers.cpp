@@ -692,6 +692,33 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       return false;
     };
 
+  const auto costmap_cost_at =
+    [this](const std::pair<double, double> & world_point) -> std::optional<int> {
+      if (!costmap.has_value()) {
+        return std::nullopt;
+      }
+      int grid_x = 0;
+      int grid_y = 0;
+      if (!costmap->worldToMapNoThrow(
+          world_point.first,
+          world_point.second,
+          grid_x,
+          grid_y))
+      {
+        return std::nullopt;
+      }
+      return costmap->getCost(grid_x, grid_y);
+    };
+
+  // Known-free gating keeps dispatch cells inside the region Nav2 can plan
+  // through with allow_unknown: false; without it, dispatch points chosen
+  // in unknown space fail with NO_VALID_PATH. Unknown-costmap cells and
+  // cells outside the costmap are non-traversable under the gate. Until
+  // the first costmap arrives the gate stays inactive rather than
+  // starving dispatch at startup.
+  const bool require_known_free_costmap =
+    params.dispatch_requires_known_free_costmap && costmap.has_value();
+
   const auto point_blocked = [&](const std::pair<double, double> & world_point) {
       if (world_blocked_in_grid(*map, world_point)) {
         return true;
@@ -721,6 +748,12 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
         return false;
       }
       const auto world_point = cell_world(map_x, map_y);
+      if (require_known_free_costmap) {
+        const auto cost = costmap_cost_at(world_point);
+        if (!cost.has_value() || *cost < 0 || *cost >= params.occ_threshold) {
+          return false;
+        }
+      }
       return point_within_exploration_boundary(world_point.first, world_point.second) &&
              !point_suppressed(world_point) &&
              !point_blocked(world_point);
@@ -763,25 +796,38 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   queue.emplace_back(robot_map_x, robot_map_y);
 
   std::optional<std::pair<int, int>> best_cell;
-  double best_target_distance_sq = std::numeric_limits<double>::infinity();
+  double best_score = std::numeric_limits<double>::infinity();
   double best_robot_distance_sq = -1.0;
 
+  // Score is target distance in meters plus an optional costmap-cost
+  // penalty, so zero-cost interior cells win over equally-near cells
+  // inside the inflation gradient. With the penalty disabled the ordering
+  // matches the previous squared-distance comparison exactly.
   const auto consider_dispatch_cell = [&](int map_x, int map_y) {
       if (!cell_dispatchable(map_x, map_y)) {
         return;
       }
       const auto world_point = cell_world(map_x, map_y);
       const double target_distance_sq = squared_distance(world_point, target_point);
+      double cost_penalty_m = 0.0;
+      if (params.dispatch_costmap_cost_penalty_m > 0.0) {
+        const auto cost = costmap_cost_at(world_point);
+        if (cost.has_value() && *cost > 0) {
+          cost_penalty_m = params.dispatch_costmap_cost_penalty_m *
+            (static_cast<double>(*cost) / 100.0);
+        }
+      }
+      const double score = std::sqrt(target_distance_sq) + cost_penalty_m;
       const double robot_dx = world_point.first - current_pose.position.x;
       const double robot_dy = world_point.second - current_pose.position.y;
       const double robot_distance_sq = robot_dx * robot_dx + robot_dy * robot_dy;
-      constexpr double kTieEpsilon = 1e-12;
+      constexpr double kTieEpsilon = 1e-9;
       if (
-        target_distance_sq + kTieEpsilon < best_target_distance_sq ||
-        (std::abs(target_distance_sq - best_target_distance_sq) <= kTieEpsilon &&
+        score + kTieEpsilon < best_score ||
+        (std::abs(score - best_score) <= kTieEpsilon &&
         robot_distance_sq > best_robot_distance_sq))
       {
-        best_target_distance_sq = target_distance_sq;
+        best_score = score;
         best_robot_distance_sq = robot_distance_sq;
         best_cell = {map_x, map_y};
       }

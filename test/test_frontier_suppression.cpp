@@ -772,8 +772,11 @@ TEST(FrontierDispatchResolutionTests, NoDispatchableCandidateSkipsWithoutSuppres
       captured_request = request;
     };
 
+  // The first candidate lies outside the map grid, so no dispatch cell
+  // can be resolved for it. (A merely too-close candidate no longer
+  // qualifies: dispatch now adjusts those to a min-distance cell.)
   const FrontierSequence frontiers{
-    make_candidate(1.2, 1.0),
+    make_candidate(-3.0, 1.0),
     make_candidate(5.0, 5.0),
   };
 

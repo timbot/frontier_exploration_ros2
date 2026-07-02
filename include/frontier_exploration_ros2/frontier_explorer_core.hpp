@@ -95,6 +95,15 @@ struct FrontierExplorerCoreParams
   bool escape_enabled{false};
   double frontier_visit_tolerance{0.30};
   double dispatch_clearance_radius_m{0.0};
+  // When true, dispatch cells must be known free in the global costmap and
+  // connected to the robot through known-free cells, so goals stay inside
+  // the region Nav2 can actually plan through with allow_unknown: false.
+  // Inactive until the first costmap arrives.
+  bool dispatch_requires_known_free_costmap{false};
+  // Target-distance penalty in meters applied to a candidate dispatch cell
+  // at costmap cost 100, scaled linearly by the cell's cost. Prefers
+  // interior zero-cost cells over cells inside the inflation gradient.
+  double dispatch_costmap_cost_penalty_m{0.0};
   bool goal_preemption_enabled{false};
   bool goal_skip_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
@@ -487,7 +496,13 @@ private:
     std::optional<FrontierLike> frontier;
     FrontierSequence frontier_sequence;
     std::string action_name;
+    // Map/costmap values at the goal cell captured at dispatch time, so a
+    // later Nav2 failure can be attributed without replaying the bag.
+    std::string dispatch_probe;
   };
+
+  std::string describe_dispatch_probe(
+    const geometry_msgs::msg::Pose & goal_pose) const;
 
   std::unordered_map<int, DispatchContext> dispatch_contexts;
 

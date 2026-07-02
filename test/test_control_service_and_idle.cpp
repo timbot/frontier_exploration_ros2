@@ -309,6 +309,135 @@ TEST(DispatchGoalPointTests, CloseFrontierWithoutFarTraversableCellsResolvesNoth
   EXPECT_FALSE(dispatch_point.has_value());
 }
 
+TEST(DispatchGoalPointTests, KnownFreeCostmapGateRestrictsDispatchComponent)
+{
+  // Map: free disk around the robot, unknown beyond. Costmap: known free
+  // only on the disk plus a forward (+x) strip. A frontier BEHIND the
+  // robot resolves behind it without the gate (unknown map cells are
+  // traversable), but with the gate the dispatch cell must stay inside
+  // the costmap's known-free component: the forward strip.
+  auto costmap_grid = build_footprint_seed_grid(-1);
+  for (int y = 0; y < 40; ++y) {
+    for (int x = 0; x < 40; ++x) {
+      const double wx = -1.0 + (static_cast<double>(x) + 0.5) * 0.05;
+      const double wy = -1.0 + (static_cast<double>(y) + 0.5) * 0.05;
+      if (wx >= 0.0 && wx <= 0.7 && wy >= -0.2 && wy <= 0.2) {
+        costmap_grid.data[
+          static_cast<std::size_t>(y) * 40 + static_cast<std::size_t>(x)] = 0;
+      }
+    }
+  }
+
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+
+  const auto pose = make_pose(0.0, 0.0);
+  const auto behind_frontier = make_frontier(-0.21, -0.10, 80);
+
+  FrontierExplorerCore ungated(params, callbacks);
+  ungated.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+  ungated.costmap = OccupancyGrid2d(costmap_grid);
+  const auto ungated_point =
+    ungated.resolve_dispatch_goal_point(behind_frontier, pose, false);
+  ASSERT_TRUE(ungated_point.has_value());
+  EXPECT_LT(ungated_point->first, 0.0);
+
+  params.dispatch_requires_known_free_costmap = true;
+  FrontierExplorerCore gated(params, callbacks);
+  gated.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+  gated.costmap = OccupancyGrid2d(costmap_grid);
+  const auto gated_point =
+    gated.resolve_dispatch_goal_point(behind_frontier, pose, false);
+  ASSERT_TRUE(gated_point.has_value());
+  EXPECT_GE(gated_point->first, 0.0);
+  EXPECT_LE(gated_point->first, 0.75);
+  EXPECT_GE(gated_point->second, -0.25);
+  EXPECT_LE(gated_point->second, 0.25);
+  const double robot_distance_sq =
+    gated_point->first * gated_point->first +
+    gated_point->second * gated_point->second;
+  EXPECT_GE(robot_distance_sq, 0.4 * 0.4 - 1e-9);
+}
+
+TEST(DispatchGoalPointTests, KnownFreeGateInactiveWithoutCostmap)
+{
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+  params.dispatch_requires_known_free_costmap = true;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+  // No costmap yet (startup): the gate must not starve dispatch.
+
+  const auto dispatch_point = core.resolve_dispatch_goal_point(
+    make_frontier(0.21, 0.10, 80),
+    make_pose(0.0, 0.0),
+    false);
+  ASSERT_TRUE(dispatch_point.has_value());
+}
+
+TEST(DispatchGoalPointTests, CostmapCostPenaltyPrefersInteriorCells)
+{
+  // All-free map except the (occupied) target cell, so the BFS must pick
+  // a nearby cell. The costmap charges cost 60 to the upper half-plane;
+  // with the penalty the zero-cost lower neighbor wins over the
+  // equally-near upper neighbors that the robot-distance tie-break would
+  // otherwise select.
+  auto map_grid = build_grid(40, 40, 0);
+  map_grid.info.resolution = 0.05;
+  map_grid.info.origin.position.x = -1.0;
+  map_grid.info.origin.position.y = -1.0;
+  map_grid.data[static_cast<std::size_t>(20) * 40 + 32] = 100;
+  const double target_x = -1.0 + (32 + 0.5) * 0.05;
+  const double target_y = -1.0 + (20 + 0.5) * 0.05;
+
+  auto costmap_grid = build_grid(40, 40, 0);
+  costmap_grid.info.resolution = 0.05;
+  costmap_grid.info.origin.position.x = -1.0;
+  costmap_grid.info.origin.position.y = -1.0;
+  for (int y = 20; y < 40; ++y) {
+    for (int x = 0; x < 40; ++x) {
+      costmap_grid.data[
+        static_cast<std::size_t>(y) * 40 + static_cast<std::size_t>(x)] = 60;
+    }
+  }
+  costmap_grid.data[static_cast<std::size_t>(20) * 40 + 32] = 60;
+
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+
+  const auto pose = make_pose(0.0, 0.0);
+  const auto frontier = make_frontier(target_x, target_y, 40);
+
+  FrontierExplorerCore no_penalty(params, callbacks);
+  no_penalty.map = OccupancyGrid2d(map_grid);
+  no_penalty.costmap = OccupancyGrid2d(costmap_grid);
+  const auto tie_break_point =
+    no_penalty.resolve_dispatch_goal_point(frontier, pose, false);
+  ASSERT_TRUE(tie_break_point.has_value());
+  EXPECT_GT(tie_break_point->second, 0.0);
+
+  params.dispatch_costmap_cost_penalty_m = 0.5;
+  FrontierExplorerCore penalized(params, callbacks);
+  penalized.map = OccupancyGrid2d(map_grid);
+  penalized.costmap = OccupancyGrid2d(costmap_grid);
+  const auto interior_point =
+    penalized.resolve_dispatch_goal_point(frontier, pose, false);
+  ASSERT_TRUE(interior_point.has_value());
+  EXPECT_LT(interior_point->second, 0.0);
+}
+
 TEST(ExplorationBoundaryTests, FiltersFrontiersOutsideStartRadius)
 {
   FrontierExplorerCoreParams params;
