@@ -888,6 +888,19 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_dispatch_goal_pose(
   goal_pose.pose.position.x = target_point.first;
   goal_pose.pose.position.y = target_point.second;
   goal_pose.pose.orientation = current_pose.orientation;
+  if (params.goal_yaw_policy == "face_frontier") {
+    // Arrive looking at the information target: dispatch resolution can
+    // pull the goal point back into known-free space, so aim from the
+    // goal toward the frontier reference rather than along the path.
+    const auto reference = frontier_reference_point(target_frontier);
+    const double face_dx = reference.first - target_point.first;
+    const double face_dy = reference.second - target_point.second;
+    if (std::hypot(face_dx, face_dy) > 0.05) {
+      goal_pose.pose.orientation =
+        detail::quaternion_from_yaw(std::atan2(face_dy, face_dx));
+      return goal_pose;
+    }
+  }
   const double to_target_dx = target_point.first - current_pose.position.x;
   const double to_target_dy = target_point.second - current_pose.position.y;
   if (std::hypot(to_target_dx, to_target_dy) > 0.05) {

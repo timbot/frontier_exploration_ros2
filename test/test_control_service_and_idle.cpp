@@ -20,6 +20,7 @@ limitations under the License.
 #include <rclcpp/rclcpp.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -751,5 +752,59 @@ TEST_F(FrontierControlNodeTests, StopWithQuitRequestsOnlyExplorerExit)
   EXPECT_TRUE(rclcpp::ok());
 }
 
+double yaw_of(const geometry_msgs::msg::Quaternion & q)
+{
+  return std::atan2(
+    2.0 * (q.w * q.z + q.x * q.y),
+    1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+}
+
+TEST(GoalYawPolicyTests, FaceFrontierAimsAtReferenceFromDispatchPoint)
+{
+  // The lone frontier hugs the robot, so dispatch resolves an adjusted
+  // point at least frontier_selection_min_distance away. path_direction
+  // faces travel; face_frontier turns back toward the frontier reference.
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+
+  const auto pose = make_pose(0.0, 0.0);
+  const auto frontier = make_frontier(0.21, 0.10, 80);
+
+  FrontierExplorerCore path_core(params, callbacks);
+  path_core.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+  const auto path_goal =
+    path_core.build_dispatch_goal_pose(frontier, pose, false);
+
+  params.goal_yaw_policy = "face_frontier";
+  FrontierExplorerCore face_core(params, callbacks);
+  face_core.map = OccupancyGrid2d(build_footprint_seed_grid(-1));
+  const auto face_goal =
+    face_core.build_dispatch_goal_pose(frontier, pose, false);
+
+  // Same dispatch position under both policies.
+  EXPECT_DOUBLE_EQ(path_goal.pose.position.x, face_goal.pose.position.x);
+  EXPECT_DOUBLE_EQ(path_goal.pose.position.y, face_goal.pose.position.y);
+
+  const double path_yaw = yaw_of(path_goal.pose.orientation);
+  const double expected_path_yaw = std::atan2(
+    path_goal.pose.position.y - 0.0, path_goal.pose.position.x - 0.0);
+  EXPECT_NEAR(path_yaw, expected_path_yaw, 1e-6);
+
+  const double face_yaw = yaw_of(face_goal.pose.orientation);
+  const double expected_face_yaw = std::atan2(
+    0.10 - face_goal.pose.position.y, 0.21 - face_goal.pose.position.x);
+  EXPECT_NEAR(face_yaw, expected_face_yaw, 1e-6);
+  // The two policies genuinely differ here: the dispatch point sits
+  // beyond the frontier, so facing it means looking back — more than
+  // 90 degrees away from the travel heading.
+  EXPECT_GT(
+    std::abs(std::atan2(
+      std::sin(face_yaw - path_yaw), std::cos(face_yaw - path_yaw))),
+    1.5707);
+}
 }  // namespace
 }  // namespace frontier_exploration_ros2

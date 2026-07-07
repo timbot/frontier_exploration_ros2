@@ -104,6 +104,11 @@ struct FrontierExplorerCoreParams
   // at costmap cost 100, scaled linearly by the cell's cost. Prefers
   // interior zero-cost cells over cells inside the inflation gradient.
   double dispatch_costmap_cost_penalty_m{0.0};
+  // Arrival heading for dispatched goals. "path_direction" (default) faces
+  // travel direction; "face_frontier" faces the frontier reference from
+  // the dispatch point, so a forward-facing depth camera arrives already
+  // observing the information target instead of an incidental heading.
+  std::string goal_yaw_policy{"path_direction"};
   bool goal_preemption_enabled{false};
   bool goal_skip_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
