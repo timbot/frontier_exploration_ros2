@@ -298,9 +298,9 @@ TEST(DispatchGoalPointTests, CloseFrontierWithoutFarTraversableCellsResolvesNoth
   callbacks.now_ns = []() {return int64_t{1'000'000'000};};
   FrontierExplorerCore core(params, callbacks);
 
-  // Occupied everywhere beyond the seeded footprint: every candidate cell at
-  // or beyond the min dispatch distance is blocked, so the min-distance
-  // constraint must still yield no dispatch point.
+  // Occupied everywhere beyond the seeded footprint: every candidate cell is
+  // either blocked or already within the visit tolerance, so there is no
+  // useful fallback dispatch point.
   core.map = OccupancyGrid2d(build_footprint_seed_grid(100));
 
   const auto pose = make_pose(0.0, 0.0);
@@ -308,6 +308,54 @@ TEST(DispatchGoalPointTests, CloseFrontierWithoutFarTraversableCellsResolvesNoth
   const auto dispatch_point = core.resolve_dispatch_goal_point(frontier, pose, false);
 
   EXPECT_FALSE(dispatch_point.has_value());
+}
+
+TEST(DispatchGoalPointTests, KnownFreeGateFallsBackInsideShortConnectedComponent)
+{
+  // Regression for the TurtleBot 4 dock bootstrap corpus: the selected
+  // frontier is farther than the preferred dispatch distance, but the
+  // robot-connected known-free costmap island is only about 0.5 m long.
+  // Dispatch should advance to its safe edge instead of starving until the
+  // island somehow grows without robot motion.
+  auto map_grid = build_grid(40, 40, 0);
+  map_grid.info.resolution = 0.05;
+  map_grid.info.origin.position.x = -1.0;
+  map_grid.info.origin.position.y = -1.0;
+
+  auto costmap_grid = build_grid(40, 40, -1);
+  costmap_grid.info.resolution = 0.05;
+  costmap_grid.info.origin.position.x = -1.0;
+  costmap_grid.info.origin.position.y = -1.0;
+  const int corridor_y = 20;
+  for (int x = 20; x <= 30; ++x) {
+    costmap_grid.data[
+      static_cast<std::size_t>(corridor_y) * 40 + static_cast<std::size_t>(x)] = 0;
+  }
+
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+  params.occ_threshold = 90;
+  params.dispatch_requires_known_free_costmap = true;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(map_grid);
+  core.costmap = OccupancyGrid2d(costmap_grid);
+
+  const auto pose = make_pose(0.025, 0.025);
+  const auto dispatch_point = core.resolve_dispatch_goal_point(
+    make_frontier(0.825, 0.025, 40), pose, false);
+
+  ASSERT_TRUE(dispatch_point.has_value());
+  const double robot_distance = std::hypot(
+    dispatch_point->first - pose.position.x,
+    dispatch_point->second - pose.position.y);
+  EXPECT_GE(robot_distance, params.frontier_visit_tolerance - 1e-9);
+  EXPECT_LT(robot_distance, params.frontier_selection_min_distance);
+  EXPECT_NEAR(dispatch_point->first, 0.525, 1e-6);
+  EXPECT_NEAR(dispatch_point->second, 0.025, 1e-6);
 }
 
 TEST(DispatchGoalPointTests, KnownFreeCostmapGateRestrictsDispatchComponent)

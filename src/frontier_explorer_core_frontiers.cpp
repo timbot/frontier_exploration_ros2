@@ -798,13 +798,19 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   std::optional<std::pair<int, int>> best_cell;
   double best_score = std::numeric_limits<double>::infinity();
   double best_robot_distance_sq = -1.0;
+  std::optional<std::pair<int, int>> best_fallback_cell;
+  double best_fallback_score = std::numeric_limits<double>::infinity();
+  double best_fallback_robot_distance_sq = -1.0;
+  const double useful_fallback_distance = std::max(0.0, params.frontier_visit_tolerance);
+  const double useful_fallback_distance_sq =
+    useful_fallback_distance * useful_fallback_distance;
 
   // Score is target distance in meters plus an optional costmap-cost
   // penalty, so zero-cost interior cells win over equally-near cells
   // inside the inflation gradient. With the penalty disabled the ordering
   // matches the previous squared-distance comparison exactly.
   const auto consider_dispatch_cell = [&](int map_x, int map_y) {
-      if (!cell_dispatchable(map_x, map_y)) {
+      if (!cell_traversable(map_x, map_y)) {
         return;
       }
       const auto world_point = cell_world(map_x, map_y);
@@ -822,6 +828,26 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       const double robot_dy = world_point.second - current_pose.position.y;
       const double robot_distance_sq = robot_dx * robot_dx + robot_dy * robot_dy;
       constexpr double kTieEpsilon = 1e-9;
+
+      // frontier_selection_min_distance is a preference, not a reason to
+      // starve bootstrap when the robot-connected known-free island is
+      // initially smaller than that distance. Keep the best safe fallback
+      // outside the visit tolerance so the fallback still commands useful
+      // progress instead of redispatching the robot's current cell.
+      if (
+        robot_distance_sq + kTieEpsilon >= useful_fallback_distance_sq &&
+        (score + kTieEpsilon < best_fallback_score ||
+        (std::abs(score - best_fallback_score) <= kTieEpsilon &&
+        robot_distance_sq > best_fallback_robot_distance_sq)))
+      {
+        best_fallback_score = score;
+        best_fallback_robot_distance_sq = robot_distance_sq;
+        best_fallback_cell = {map_x, map_y};
+      }
+
+      if (robot_distance_sq + kTieEpsilon < min_robot_distance_sq) {
+        return;
+      }
       if (
         score + kTieEpsilon < best_score ||
         (std::abs(score - best_score) <= kTieEpsilon &&
@@ -866,6 +892,9 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
     }
   }
 
+  if (!best_cell.has_value()) {
+    best_cell = best_fallback_cell;
+  }
   if (!best_cell.has_value()) {
     return std::nullopt;
   }
