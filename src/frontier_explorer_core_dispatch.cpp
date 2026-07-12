@@ -339,6 +339,79 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::active_goal_targe
   return std::nullopt;
 }
 
+bool FrontierExplorerCore::handle_disconnected_active_goal(
+  const geometry_msgs::msg::Pose & current_pose)
+{
+  if (
+    !params.dispatch_requires_known_free_costmap ||
+    !map.has_value() ||
+    !costmap.has_value() ||
+    !active_goal_frontier.has_value())
+  {
+    return false;
+  }
+
+  const auto active_target = active_goal_target_point();
+  if (!active_target.has_value()) {
+    return false;
+  }
+
+  // Bypass the minimum-distance preference only for the connectivity probe.
+  // Otherwise a healthy target appears invalid as the robot naturally gets
+  // closer than frontier_selection_min_distance while following its path.
+  const auto connected_target = resolve_dispatch_goal_point(
+    *active_goal_frontier,
+    current_pose,
+    true);
+  if (
+    connected_target.has_value() &&
+    squared_distance(*connected_target, *active_target) <= 1e-6)
+  {
+    return false;
+  }
+
+  std::ostringstream reason;
+  reason << std::fixed << std::setprecision(2)
+         << "Active frontier endpoint is no longer connected through guarded known-free cells"
+         << ": endpoint=(" << active_target->first << ", " << active_target->second << ")";
+
+  // Resolve again with the ordinary distance policy. This keeps the 0.8 m
+  // preference and short-island fallback, so a disconnected endpoint cannot
+  // retarget to the robot's current cell merely to keep the action alive.
+  const auto replacement_target = resolve_dispatch_goal_point(
+    *active_goal_frontier,
+    current_pose,
+    false);
+  if (!replacement_target.has_value()) {
+    const std::string cancel_reason =
+      reason.str() + "; no useful connected replacement is available";
+    active_goal_blocked_reason = cancel_reason;
+    request_active_goal_cancel(cancel_reason);
+    return true;
+  }
+
+  reason << ", replacement=(" << replacement_target->first << ", "
+         << replacement_target->second << ")";
+  FrontierSequence replacement_sequence = active_goal_frontiers;
+  const FrontierLike replacement_frontier = frontier_with_goal_point(
+    *active_goal_frontier,
+    *replacement_target);
+  if (replacement_sequence.empty()) {
+    replacement_sequence.push_back(replacement_frontier);
+  } else {
+    replacement_sequence.front() = replacement_frontier;
+  }
+
+  active_goal_blocked_reason = reason.str();
+  request_frontier_reselection(
+    replacement_sequence,
+    current_pose,
+    "connected-retarget",
+    reason.str(),
+    "Retargeting disconnected frontier goal");
+  return true;
+}
+
 FrontierLike FrontierExplorerCore::frontier_with_goal_point(
   const FrontierLike & frontier,
   const std::pair<double, double> & goal_point) const
@@ -428,6 +501,7 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   const bool preemption_allowed = (
     params.goal_preemption_enabled ||
     params.goal_skip_on_blocked_goal ||
+    params.dispatch_requires_known_free_costmap ||
     completion_distance_enabled);
   if (!preemption_allowed) {
     return;
@@ -454,6 +528,7 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   if (
     !active_goal_cost_status.has_value() &&
     !params.goal_preemption_enabled &&
+    !params.dispatch_requires_known_free_costmap &&
     !completion_distance_enabled)
   {
     // Nothing to do when all active-goal update triggers are effectively inactive.
@@ -475,6 +550,13 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   if (!active_goal_cost_status.has_value()) {
     active_goal_blocked_reason.reset();
+  }
+
+  if (
+    !active_goal_cost_status.has_value() &&
+    handle_disconnected_active_goal(*current_pose))
+  {
+    return;
   }
 
   if (active_goal_cost_status.has_value()) {

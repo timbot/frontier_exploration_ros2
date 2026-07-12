@@ -243,6 +243,9 @@ public:
   std::optional<std::string> frontier_cost_status(
     const std::optional<FrontierLike> & frontier) const;
 
+  bool handle_disconnected_active_goal(
+    const geometry_msgs::msg::Pose & current_pose);
+
   geometry_msgs::msg::PoseStamped build_goal_pose(
     const FrontierLike & target_frontier,
     const geometry_msgs::msg::Pose & current_pose) const;

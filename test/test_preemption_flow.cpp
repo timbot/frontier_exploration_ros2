@@ -20,6 +20,7 @@ limitations under the License.
 #include <geometry_msgs/msg/pose.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -361,6 +362,171 @@ TEST(PreemptionFlowTests, BlockedGoalReplacementLogsSkipVerb)
     }
   }
   EXPECT_TRUE(found_skip_log);
+}
+
+TEST(PreemptionFlowTests, DisconnectedCostZeroEndpointRetargetsToConnectedSafeCell)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(1.5, 2.5);
+  std::vector<std::string> info_logs;
+  std::vector<GoalDispatchRequest> dispatched_requests;
+
+  FrontierExplorerCoreParams params;
+  params.goal_preemption_enabled = false;
+  params.goal_skip_on_blocked_goal = false;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+  params.post_goal_settle_enabled = false;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{5'000'000'000};};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.wait_for_action_server = [](double) {return true;};
+  callbacks.dispatch_goal_request = [&dispatched_requests](const GoalDispatchRequest & request) {
+      dispatched_requests.push_back(request);
+    };
+  callbacks.log_info = [&info_logs](const std::string & message) {
+      info_logs.push_back(message);
+    };
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  for (int x = 1; x <= 3; ++x) {
+    set_cell(costmap_msg, x, 2, 0);
+  }
+  // The endpoint itself remains cost zero, but an unknown/occupied gap now
+  // separates it from the robot-connected known-free component.
+  set_cell(costmap_msg, 6, 2, 0);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.map_generation = 1;
+  core.costmap_generation = 2;
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  core.active_goal_frontier = make_frontier(6.5, 2.5, 20);
+  core.active_goal_frontiers = {*core.active_goal_frontier};
+  core.active_goal_kind = "frontier";
+  core.active_goal_sent_time_ns = 0;
+  core.current_dispatch_id = 1;
+  core.replacement_required_hits = 1;
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_handle = fake_handle;
+
+  core.consider_preempt_active_goal("map");
+
+  ASSERT_EQ(dispatched_requests.size(), 1U);
+  const auto & replacement = dispatched_requests.back().goal_pose.pose.position;
+  EXPECT_NEAR(replacement.x, 3.5, 1e-9);
+  EXPECT_NEAR(replacement.y, 2.5, 1e-9);
+  EXPECT_GE(std::hypot(replacement.x - current_pose.position.x, replacement.y - current_pose.position.y), 0.8);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_EQ(core.suppressed_region_count(), 0U);
+  EXPECT_EQ(core.costmap->getCost(6, 2), 0);
+  EXPECT_TRUE(std::any_of(
+    info_logs.begin(),
+    info_logs.end(),
+    [](const std::string & message) {
+      return message.find("Retargeting disconnected frontier goal") != std::string::npos;
+    }));
+}
+
+TEST(PreemptionFlowTests, ConnectedEndpointDoesNotChaseMinimumDistanceAsRobotApproaches)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(5.9, 2.5);
+  int dispatch_calls = 0;
+
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{5'000'000'000};};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  for (int x = 1; x <= 6; ++x) {
+    set_cell(costmap_msg, x, 2, 0);
+  }
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  core.active_goal_frontier = make_frontier(6.5, 2.5, 20);
+  core.active_goal_frontiers = {*core.active_goal_frontier};
+  core.active_goal_kind = "frontier";
+  core.current_dispatch_id = 1;
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_handle = fake_handle;
+
+  core.consider_preempt_active_goal("map");
+
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_TRUE(core.pending_frontier_sequence.empty());
+}
+
+TEST(PreemptionFlowTests, DisconnectedEndpointCancelsWhenNoUsefulReplacementExists)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(1.5, 2.5);
+  int dispatch_calls = 0;
+  std::vector<std::string> debug_logs;
+
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{5'000'000'000};};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [&debug_logs](const std::string & message) {
+      debug_logs.push_back(message);
+    };
+  callbacks.log_error = [](const std::string &) {};
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  set_cell(costmap_msg, 1, 2, 0);
+  set_cell(costmap_msg, 6, 2, 0);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  core.active_goal_frontier = make_frontier(6.5, 2.5, 20);
+  core.active_goal_frontiers = {*core.active_goal_frontier};
+  core.active_goal_kind = "frontier";
+  core.current_dispatch_id = 1;
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_handle = fake_handle;
+
+  core.consider_preempt_active_goal("map");
+
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  ASSERT_FALSE(debug_logs.empty());
+  EXPECT_NE(
+    debug_logs.back().find("no useful connected replacement is available"),
+    std::string::npos);
 }
 
 TEST(PreemptionFlowTests, DispatchSkipsBlockedFrontierAndUsesNextSequenceTarget)
