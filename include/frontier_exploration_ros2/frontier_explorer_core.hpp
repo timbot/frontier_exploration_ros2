@@ -112,6 +112,12 @@ struct FrontierExplorerCoreParams
   bool goal_preemption_enabled{false};
   bool goal_skip_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
+  // A disconnected endpoint may move as the fused known-free component
+  // changes. Retarget only after this dispatch-age gate and only when the
+  // replacement advances toward the frontier reference by the configured
+  // amount. Both default to zero for backward-compatible behavior.
+  double connected_retarget_min_interval_s{0.0};
+  double connected_retarget_min_frontier_progress_m{0.0};
   // LiDAR-model geometry used only by the visible-gain helper at the target pose.
   // Maximum ray length for the target-pose visibility estimate.
   double goal_preemption_lidar_range_m{12.0};
@@ -449,6 +455,7 @@ public:
   FrontierSequence active_goal_frontiers;
   std::string active_goal_kind;
   std::string active_action_name;
+  bool active_goal_connected_retarget{false};
   std::optional<int64_t> active_goal_sent_time_ns;
   bool goal_in_progress{false};
   GoalLifecycleState goal_state{GoalLifecycleState::IDLE};

@@ -356,6 +356,24 @@ bool FrontierExplorerCore::handle_disconnected_active_goal(
     return false;
   }
 
+  if (active_goal_sent_time_ns.has_value() &&
+    params.connected_retarget_min_interval_s > 0.0)
+  {
+    const int64_t now_ns = callbacks.now_ns();
+    const double dispatch_age_s = static_cast<double>(
+      now_ns - *active_goal_sent_time_ns) / 1e9;
+    if (dispatch_age_s < params.connected_retarget_min_interval_s) {
+      std::ostringstream hold_reason;
+      hold_reason << std::fixed << std::setprecision(2)
+                  << "Holding active frontier endpoint through transient connectivity change"
+                  << ": dispatch_age=" << dispatch_age_s
+                  << "s, minimum=" << params.connected_retarget_min_interval_s << "s";
+      active_goal_blocked_reason = hold_reason.str();
+      callbacks.log_info(*active_goal_blocked_reason);
+      return true;
+    }
+  }
+
   // Bypass the minimum-distance preference only for the connectivity probe.
   // Otherwise a healthy target appears invalid as the robot naturally gets
   // closer than frontier_selection_min_distance while following its path.
@@ -387,6 +405,38 @@ bool FrontierExplorerCore::handle_disconnected_active_goal(
       reason.str() + "; no useful connected replacement is available";
     active_goal_blocked_reason = cancel_reason;
     request_active_goal_cancel(cancel_reason);
+    return true;
+  }
+
+  const auto frontier_reference = frontier_reference_point(*active_goal_frontier);
+  const double current_distance_to_frontier = std::hypot(
+    frontier_reference.first - current_pose.position.x,
+    frontier_reference.second - current_pose.position.y);
+  const double replacement_distance_to_frontier = std::hypot(
+    frontier_reference.first - replacement_target->first,
+    frontier_reference.second - replacement_target->second);
+  const double active_distance_to_frontier = std::hypot(
+    frontier_reference.first - active_target->first,
+    frontier_reference.second - active_target->second);
+  const double progress_baseline_distance = active_goal_connected_retarget ?
+    active_distance_to_frontier : current_distance_to_frontier;
+  const double replacement_progress_m =
+    progress_baseline_distance - replacement_distance_to_frontier;
+  if (replacement_progress_m + 1e-9 <
+    params.connected_retarget_min_frontier_progress_m)
+  {
+    std::ostringstream hold_reason;
+    hold_reason << std::fixed << std::setprecision(2)
+                << reason.str()
+                << "; rejected replacement=(" << replacement_target->first << ", "
+                << replacement_target->second << ") because frontier progress="
+                << replacement_progress_m << "m is below minimum="
+                << params.connected_retarget_min_frontier_progress_m << "m"
+                << " relative_to="
+                << (active_goal_connected_retarget ?
+    "previous-connected-endpoint" : "robot");
+    active_goal_blocked_reason = hold_reason.str();
+    callbacks.log_info(*active_goal_blocked_reason);
     return true;
   }
 
@@ -1151,6 +1201,8 @@ void FrontierExplorerCore::dispatch_goal_request(
   active_goal_frontier = frontier;
   active_goal_frontiers = frontier_sequence;
   active_action_name = action_name;
+  active_goal_connected_retarget =
+    pending_frontier_selection_mode == "connected-retarget";
   mark_dispatch_state(dispatch_id, GoalLifecycleState::SENDING);
   set_goal_state(GoalLifecycleState::SENDING);
   goal_handle.reset();
@@ -1189,6 +1241,7 @@ void FrontierExplorerCore::clear_active_goal_state()
   active_goal_frontiers.clear();
   active_goal_kind.clear();
   active_action_name.clear();
+  active_goal_connected_retarget = false;
   active_goal_sent_time_ns.reset();
   active_goal_blocked_reason.reset();
   last_low_gain_reselection_time_ns.reset();

@@ -434,6 +434,165 @@ TEST(PreemptionFlowTests, DisconnectedCostZeroEndpointRetargetsToConnectedSafeCe
     }));
 }
 
+TEST(PreemptionFlowTests, DisconnectedEndpointDoesNotRetargetAwayFromFrontier)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(2.5, 2.5);
+  std::vector<std::string> info_logs;
+  int dispatch_calls = 0;
+
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+  params.connected_retarget_min_frontier_progress_m = 0.25;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{20'000'000'000};};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.log_info = [&info_logs](const std::string & message) {
+      info_logs.push_back(message);
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  for (int x = 0; x <= 2; ++x) {
+    set_cell(costmap_msg, x, 2, 0);
+  }
+  set_cell(costmap_msg, 6, 2, 0);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  core.active_goal_frontier = make_frontier(6.5, 2.5, 20);
+  core.active_goal_frontiers = {*core.active_goal_frontier};
+  core.active_goal_kind = "frontier";
+  core.active_goal_sent_time_ns = 0;
+  core.current_dispatch_id = 1;
+  core.replacement_required_hits = 1;
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_handle = fake_handle;
+
+  core.consider_preempt_active_goal("map");
+
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_TRUE(core.pending_frontier_sequence.empty());
+  EXPECT_TRUE(std::any_of(
+    info_logs.begin(),
+    info_logs.end(),
+    [](const std::string & message) {
+      return message.find("frontier progress=") != std::string::npos &&
+             message.find("below minimum=0.25m") != std::string::npos;
+    }));
+}
+
+TEST(PreemptionFlowTests, DisconnectedEndpointRetargetWaitsForMinimumInterval)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(1.5, 2.5);
+  int dispatch_calls = 0;
+  int64_t now_ns = 5'000'000'000;
+
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.connected_retarget_min_interval_s = 10.0;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  for (int x = 1; x <= 3; ++x) {
+    set_cell(costmap_msg, x, 2, 0);
+  }
+  set_cell(costmap_msg, 6, 2, 0);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  core.active_goal_frontier = make_frontier(6.5, 2.5, 20);
+  core.active_goal_frontiers = {*core.active_goal_frontier};
+  core.active_goal_kind = "frontier";
+  core.active_goal_sent_time_ns = 0;
+  core.current_dispatch_id = 1;
+  core.replacement_required_hits = 1;
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_handle = fake_handle;
+
+  core.consider_preempt_active_goal("map");
+
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  ASSERT_TRUE(core.active_goal_blocked_reason.has_value());
+  EXPECT_NE(
+    core.active_goal_blocked_reason->find("Holding active frontier endpoint"),
+    std::string::npos);
+}
+
+TEST(PreemptionFlowTests, RepeatedConnectedRetargetMustImprovePreviousEndpoint)
+{
+  geometry_msgs::msg::Pose current_pose = make_pose(1.5, 2.5);
+  std::vector<std::string> info_logs;
+  int dispatch_calls = 0;
+
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.frontier_selection_min_distance = 0.8;
+  params.connected_retarget_min_frontier_progress_m = 0.25;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{20'000'000'000};};
+  callbacks.get_current_pose = [&current_pose]() {
+      return std::optional<geometry_msgs::msg::Pose>(current_pose);
+    };
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.log_info = [&info_logs](const std::string & message) {
+      info_logs.push_back(message);
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 5, 0));
+  auto costmap_msg = build_grid(10, 5, 100);
+  for (int x = 1; x <= 2; ++x) {
+    set_cell(costmap_msg, x, 2, 0);
+  }
+  set_cell(costmap_msg, 6, 2, 0);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.set_goal_state(GoalLifecycleState::ACTIVE);
+  auto frontier = make_frontier(6.5, 2.5, 20);
+  frontier.goal_point = std::pair<double, double>{3.5, 2.5};
+  core.active_goal_frontier = frontier;
+  core.active_goal_frontiers = {frontier};
+  core.active_goal_kind = "frontier";
+  core.active_goal_connected_retarget = true;
+  core.active_goal_sent_time_ns = 0;
+  core.current_dispatch_id = 1;
+  core.replacement_required_hits = 1;
+  core.goal_handle = std::make_shared<FakeGoalHandle>();
+
+  core.consider_preempt_active_goal("map");
+
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_TRUE(std::any_of(
+    info_logs.begin(),
+    info_logs.end(),
+    [](const std::string & message) {
+      return message.find("relative_to=previous-connected-endpoint") !=
+             std::string::npos;
+    }));
+}
+
 TEST(PreemptionFlowTests, ConnectedEndpointDoesNotChaseMinimumDistanceAsRobotApproaches)
 {
   geometry_msgs::msg::Pose current_pose = make_pose(5.9, 2.5);

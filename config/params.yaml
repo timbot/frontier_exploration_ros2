@@ -101,6 +101,10 @@ frontier_explorer:
     # Also effects performance.
     goal_preemption_min_interval_s: 2.0
 
+    # Optional stability gates for connectivity-driven endpoint replacement.
+    connected_retarget_min_interval_s: 0.0
+    connected_retarget_min_frontier_progress_m: 0.0
+
     # Skip the active frontier goal if it becomes blocked.
     goal_skip_on_blocked_goal: false
 

@@ -79,6 +79,12 @@ FrontierExplorerCore::FrontierExplorerCore(
     0.0,
     params.frontier_candidate_min_goal_distance_m);
   params.dispatch_clearance_radius_m = std::max(0.0, params.dispatch_clearance_radius_m);
+  params.connected_retarget_min_interval_s = std::max(
+    0.0,
+    params.connected_retarget_min_interval_s);
+  params.connected_retarget_min_frontier_progress_m = std::max(
+    0.0,
+    params.connected_retarget_min_frontier_progress_m);
   // Visible-gain geometry is clamped here so later preemption checks can assume valid ranges.
   params.goal_preemption_lidar_range_m = std::max(
     0.1,

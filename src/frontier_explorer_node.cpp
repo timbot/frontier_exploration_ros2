@@ -150,6 +150,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<bool>("goal_preemption_enabled", false);
   this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
   this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
+  this->declare_parameter<double>("connected_retarget_min_interval_s", 0.0);
+  this->declare_parameter<double>("connected_retarget_min_frontier_progress_m", 0.0);
   this->declare_parameter<double>("goal_preemption_lidar_range_m", 12.0);
   this->declare_parameter<double>("goal_preemption_lidar_fov_deg", 360.0);
   this->declare_parameter<double>("goal_preemption_lidar_ray_step_deg", 1.0);
@@ -234,6 +236,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "goal_preemption_enabled").as_bool();
   params_.goal_skip_on_blocked_goal = this->get_parameter("goal_skip_on_blocked_goal").as_bool();
   params_.goal_preemption_min_interval_s = this->get_parameter("goal_preemption_min_interval_s").as_double();
+  params_.connected_retarget_min_interval_s = this->get_parameter(
+    "connected_retarget_min_interval_s").as_double();
+  params_.connected_retarget_min_frontier_progress_m = this->get_parameter(
+    "connected_retarget_min_frontier_progress_m").as_double();
   params_.goal_preemption_lidar_range_m = this->get_parameter(
     "goal_preemption_lidar_range_m").as_double();
   params_.goal_preemption_lidar_fov_deg = this->get_parameter(
