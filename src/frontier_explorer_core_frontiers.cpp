@@ -719,19 +719,38 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   const bool require_known_free_costmap =
     params.dispatch_requires_known_free_costmap && costmap.has_value();
 
-  const auto point_blocked = [&](const std::pair<double, double> & world_point) {
-      if (world_blocked_in_grid(*map, world_point)) {
+  const auto point_blocked_for_connectivity =
+    [&](const std::pair<double, double> & world_point) {
+      // The global and local costmaps are already inflated for the robot
+      // footprint. Applying dispatch_clearance_radius_m around every
+      // costmap cell a second time can make the robot's own traversable cell
+      // appear disconnected whenever it is inside the inflation gradient.
+      // Connectivity therefore follows exact occupied/lethal cells. The
+      // explicit raw-map clearance margin remains an endpoint requirement
+      // below; Nav2 and the motion guard retain path-level safety ownership.
+      const auto map_cost = world_point_cost(map, world_point);
+      if (map_cost.has_value() && *map_cost >= params.occ_threshold) {
         return true;
       }
       if (enforce_costmap_reachability) {
-        if (costmap.has_value() && world_blocked_in_grid(*costmap, world_point)) {
+        const auto global_cost = world_point_cost(costmap, world_point);
+        if (global_cost.has_value() && *global_cost >= params.occ_threshold) {
           return true;
         }
-        if (local_costmap.has_value() && world_blocked_in_grid(*local_costmap, world_point)) {
+        const auto local_cost = world_point_cost(local_costmap, world_point);
+        if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
           return true;
         }
       }
       return false;
+    };
+
+  const auto endpoint_clearance_blocked =
+    [&](const std::pair<double, double> & world_point) {
+      // dispatch_clearance_radius_m is a physical endpoint margin against
+      // raw mapped obstacles. Costmap inflation already encodes its own
+      // footprint margin and must not be dilated again here.
+      return clearance_radius > 0.0 && world_blocked_in_grid(*map, world_point);
     };
 
   const auto point_suppressed = [&](const std::pair<double, double> & world_point) {
@@ -743,7 +762,7 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       return map->mapToWorld(map_x, map_y);
     };
 
-  const auto cell_traversable = [&](int map_x, int map_y) {
+  const auto cell_connected = [&](int map_x, int map_y) {
       if (!in_bounds(map_x, map_y)) {
         return false;
       }
@@ -755,12 +774,20 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
         }
       }
       return point_within_exploration_boundary(world_point.first, world_point.second) &&
-             !point_suppressed(world_point) &&
-             !point_blocked(world_point);
+             !point_blocked_for_connectivity(world_point);
+    };
+
+  const auto cell_endpoint_safe = [&](int map_x, int map_y) {
+      if (!cell_connected(map_x, map_y)) {
+        return false;
+      }
+      const auto world_point = cell_world(map_x, map_y);
+      return !point_suppressed(world_point) &&
+             !endpoint_clearance_blocked(world_point);
     };
 
   const auto cell_dispatchable = [&](int map_x, int map_y) {
-      if (!cell_traversable(map_x, map_y)) {
+      if (!cell_endpoint_safe(map_x, map_y)) {
         return false;
       }
       if (min_robot_distance_sq <= 0.0) {
@@ -810,7 +837,7 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   // inside the inflation gradient. With the penalty disabled the ordering
   // matches the previous squared-distance comparison exactly.
   const auto consider_dispatch_cell = [&](int map_x, int map_y) {
-      if (!cell_traversable(map_x, map_y)) {
+      if (!cell_endpoint_safe(map_x, map_y)) {
         return;
       }
       const auto world_point = cell_world(map_x, map_y);
@@ -884,7 +911,7 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       if (visited[next_index]) {
         continue;
       }
-      if (!cell_traversable(next_x, next_y)) {
+      if (!cell_connected(next_x, next_y)) {
         continue;
       }
       visited[next_index] = 1U;

@@ -19,6 +19,7 @@ limitations under the License.
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -91,6 +92,64 @@ TEST(ControlCoreSessionTests, StopExplorationSessionDisablesScheduling)
   core.try_send_next_goal();
 
   EXPECT_EQ(frontier_search_calls, 0);
+}
+
+TEST(ControlCoreSessionTests, RepeatedUndispatchableFrontierSetIsRateLimited)
+{
+  int64_t now_ns = 1'000'000'000;
+  std::vector<std::string> info_logs;
+  FrontierExplorerCoreParams params;
+  params.frontier_map_optimization_enabled = false;
+  params.undispatchable_frontier_retry_interval_s = 2.0;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {return now_ns;};
+  callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(1.5, 1.5));
+    };
+  callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {make_frontier(8.5, 8.5, 20)};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+  callbacks.log_info = [&info_logs](const std::string & message) {
+      info_logs.push_back(message);
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  // An occupied map makes the selected frontier genuinely undispatchable.
+  // Map and costmap callbacks may still invoke this scheduler independently.
+  core.map = OccupancyGrid2d(build_grid(10, 10, 100));
+  core.costmap = OccupancyGrid2d(build_grid(10, 10, 100));
+
+  const auto rejection_count = [&info_logs]() {
+      return std::count_if(
+        info_logs.begin(),
+        info_logs.end(),
+        [](const std::string & message) {
+          return message.find("All selected frontier goals are blocked") !=
+                 std::string::npos;
+        });
+    };
+
+  core.try_send_next_goal();
+  EXPECT_EQ(rejection_count(), 1);
+
+  now_ns = 2'000'000'000;
+  core.try_send_next_goal();
+  EXPECT_EQ(rejection_count(), 1);
+
+  now_ns = 3'100'000'000;
+  core.try_send_next_goal();
+  EXPECT_EQ(rejection_count(), 2);
 }
 
 TEST(ControlCoreSessionTests, StartExplorationSessionResetsSessionState)
@@ -356,6 +415,60 @@ TEST(DispatchGoalPointTests, KnownFreeGateFallsBackInsideShortConnectedComponent
   EXPECT_LT(robot_distance, params.frontier_selection_min_distance);
   EXPECT_NEAR(dispatch_point->first, 0.525, 1e-6);
   EXPECT_NEAR(dispatch_point->second, 0.025, 1e-6);
+}
+
+TEST(DispatchGoalPointTests, InflatedCostmapDoesNotApplyEndpointClearanceTwice)
+{
+  // Exact regression shape from the 2026-07-18 depth-fidelity run. The
+  // robot occupies a traversable inflation-gradient cell (cost 53) with a
+  // lethal costmap cell less than one endpoint-clearance radius away. The
+  // old resolver dilated that already-inflated costmap again, reducing the
+  // connected component to the robot cell even though a known-free corridor
+  // led to safe dispatch endpoints.
+  auto map_grid = build_grid(60, 60, 0);
+  map_grid.info.resolution = 0.05;
+  map_grid.info.origin.position.x = -1.5;
+  map_grid.info.origin.position.y = -1.5;
+
+  auto costmap_grid = build_grid(60, 60, -1);
+  costmap_grid.info.resolution = 0.05;
+  costmap_grid.info.origin.position.x = -1.5;
+  costmap_grid.info.origin.position.y = -1.5;
+  constexpr int robot_x = 20;
+  constexpr int corridor_y = 30;
+  for (int x = robot_x; x <= 45; ++x) {
+    costmap_grid.data[
+      static_cast<std::size_t>(corridor_y) * 60 + static_cast<std::size_t>(x)] = 0;
+  }
+  costmap_grid.data[
+    static_cast<std::size_t>(corridor_y) * 60 + robot_x] = 53;
+  costmap_grid.data[
+    static_cast<std::size_t>(corridor_y + 6) * 60 + robot_x] = 100;
+
+  FrontierExplorerCoreParams params;
+  params.frontier_selection_min_distance = 0.8;
+  params.frontier_visit_tolerance = 0.4;
+  params.dispatch_clearance_radius_m = 0.344;
+  params.dispatch_requires_known_free_costmap = true;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(map_grid);
+  core.costmap = OccupancyGrid2d(costmap_grid);
+
+  const double robot_world_x = -1.5 + (robot_x + 0.5) * 0.05;
+  const double world_y = -1.5 + (corridor_y + 0.5) * 0.05;
+  const double target_world_x = -1.5 + (44.5 * 0.05);
+  const auto dispatch_point = core.resolve_dispatch_goal_point(
+    make_frontier(target_world_x, world_y, 80),
+    make_pose(robot_world_x, world_y),
+    false);
+
+  ASSERT_TRUE(dispatch_point.has_value());
+  EXPECT_NEAR(dispatch_point->first, target_world_x, 1e-9);
+  EXPECT_NEAR(dispatch_point->second, world_y, 1e-9);
 }
 
 TEST(DispatchGoalPointTests, KnownFreeCostmapGateRestrictsDispatchComponent)

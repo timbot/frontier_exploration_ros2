@@ -170,11 +170,33 @@ void FrontierExplorerCore::try_send_next_goal()
     return;
   }
 
-  send_frontier_goal(
+  const auto sequence_signature = frontier_signature(frontier_sequence);
+  const int64_t now_ns = callbacks.now_ns();
+  if (
+    params.undispatchable_frontier_retry_interval_s > 0.0 &&
+    last_undispatchable_frontier_signature.has_value() &&
+    *last_undispatchable_frontier_signature == sequence_signature &&
+    last_undispatchable_frontier_attempt_ns.has_value())
+  {
+    const double elapsed_s = static_cast<double>(
+      now_ns - *last_undispatchable_frontier_attempt_ns) / 1e9;
+    if (elapsed_s < params.undispatchable_frontier_retry_interval_s) {
+      return;
+    }
+  }
+
+  const bool dispatched = send_frontier_goal(
     frontier_sequence,
     *current_pose,
     "Sending frontier goal (" + selection.mode + "): " + describe_frontier(frontier_sequence.front()),
     escape_mode_active);
+  if (dispatched) {
+    last_undispatchable_frontier_signature.reset();
+    last_undispatchable_frontier_attempt_ns.reset();
+  } else {
+    last_undispatchable_frontier_signature = sequence_signature;
+    last_undispatchable_frontier_attempt_ns = now_ns;
+  }
 }
 
 void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
@@ -185,6 +207,8 @@ void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
   no_frontiers_reported = false;
   no_reachable_frontier_reported = false;
   all_frontiers_suppressed_reported = false;
+  last_undispatchable_frontier_signature.reset();
+  last_undispatchable_frontier_attempt_ns.reset();
   return_to_start_started = false;
   return_to_start_completed = false;
   suppressed_return_to_start_started = false;
