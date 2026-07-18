@@ -104,6 +104,10 @@ struct FrontierExplorerCoreParams
   // at costmap cost 100, scaled linearly by the cell's cost. Prefers
   // interior zero-cost cells over cells inside the inflation gradient.
   double dispatch_costmap_cost_penalty_m{0.0};
+  // Minimum reduction in distance to the selected frontier reference that
+  // an ordinary reachable endpoint must provide. A negative value disables
+  // the gate. Escape dispatches intentionally bypass it.
+  double dispatch_min_frontier_progress_m{-1.0};
   // Bound repeated resolver work when map and costmap callbacks expose the
   // same frontier sequence but none of its endpoints is dispatchable.
   double undispatchable_frontier_retry_interval_s{0.0};

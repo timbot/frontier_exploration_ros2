@@ -79,6 +79,9 @@ FrontierExplorerCore::FrontierExplorerCore(
     0.0,
     params.frontier_candidate_min_goal_distance_m);
   params.dispatch_clearance_radius_m = std::max(0.0, params.dispatch_clearance_radius_m);
+  params.dispatch_min_frontier_progress_m = std::max(
+    -1.0,
+    params.dispatch_min_frontier_progress_m);
   params.undispatchable_frontier_retry_interval_s = std::max(
     0.0,
     params.undispatchable_frontier_retry_interval_s);

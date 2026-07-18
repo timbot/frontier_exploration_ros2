@@ -598,11 +598,34 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   bool bypass_min_distance_dispatch) const
 {
   const auto target_point = frontier_position(target_frontier);
+  const auto frontier_reference = frontier_reference_point(target_frontier);
+  const double robot_distance_to_frontier = std::hypot(
+    frontier_reference.first - current_pose.position.x,
+    frontier_reference.second - current_pose.position.y);
+  const auto makes_frontier_progress =
+    [
+    this, bypass_min_distance_dispatch, &frontier_reference,
+    robot_distance_to_frontier
+    ](const std::pair<double, double> & world_point) {
+      if (
+        bypass_min_distance_dispatch ||
+        params.dispatch_min_frontier_progress_m < 0.0)
+      {
+        return true;
+      }
+      const double endpoint_distance_to_frontier = std::hypot(
+        frontier_reference.first - world_point.first,
+        frontier_reference.second - world_point.second);
+      const double progress_m =
+        robot_distance_to_frontier - endpoint_distance_to_frontier;
+      return progress_m + 1e-9 >= params.dispatch_min_frontier_progress_m;
+    };
   if (!point_within_exploration_boundary(target_point.first, target_point.second)) {
     return std::nullopt;
   }
   if (!map.has_value()) {
-    return target_point;
+    return makes_frontier_progress(target_point) ?
+      std::optional<std::pair<double, double>>(target_point) : std::nullopt;
   }
 
   int target_map_x = 0;
@@ -803,6 +826,9 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
       if (!cell_dispatchable(target_map_x, target_map_y)) {
         return false;
       }
+      if (!makes_frontier_progress(target_point)) {
+        return false;
+      }
       if (min_robot_distance_sq <= 0.0) {
         return true;
       }
@@ -841,6 +867,9 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
         return;
       }
       const auto world_point = cell_world(map_x, map_y);
+      if (!makes_frontier_progress(world_point)) {
+        return;
+      }
       const double target_distance_sq = squared_distance(world_point, target_point);
       double cost_penalty_m = 0.0;
       if (params.dispatch_costmap_cost_penalty_m > 0.0) {

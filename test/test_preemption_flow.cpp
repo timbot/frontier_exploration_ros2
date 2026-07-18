@@ -726,6 +726,52 @@ TEST(PreemptionFlowTests, DispatchSkipsBlockedFrontierAndUsesNextSequenceTarget)
     make_frontier(2.0, 2.0)));
 }
 
+TEST(PreemptionFlowTests, DispatchSkipsEndpointThatMovesAwayFromItsFrontier)
+{
+  // Candidate D repeatedly projected a selected frontier onto the opposite
+  // edge of the robot-connected costmap island. That endpoint was reachable,
+  // but it increased distance to the frontier and wasted a full Nav2 leg.
+  FrontierExplorerCoreParams params;
+  params.dispatch_requires_known_free_costmap = true;
+  params.dispatch_min_frontier_progress_m = 0.0;
+  params.frontier_selection_min_distance = 1.0;
+  params.frontier_visit_tolerance = 0.4;
+  params.occ_threshold = 90;
+
+  FrontierExplorerCore core(params, FrontierExplorerCoreCallbacks{});
+  core.map = OccupancyGrid2d(build_grid(12, 12, 0));
+  auto costmap_msg = build_grid(12, 12, 100);
+  for (int x = 5; x <= 8; ++x) {
+    set_cell(costmap_msg, x, 5, 0);
+  }
+  core.costmap = OccupancyGrid2d(costmap_msg);
+
+  std::optional<GoalDispatchRequest> dispatched_request;
+  core.callbacks.wait_for_action_server = [](double) {return true;};
+  core.callbacks.dispatch_goal_request = [&dispatched_request](
+    const GoalDispatchRequest & request) {
+      dispatched_request = request;
+    };
+
+  const FrontierSequence frontier_sequence{
+    make_frontier(2.5, 5.5),
+    make_frontier(8.5, 5.5),
+  };
+
+  EXPECT_TRUE(core.send_frontier_goal(
+    frontier_sequence,
+    make_pose(5.5, 5.5),
+    "Sending frontier goal"));
+
+  ASSERT_TRUE(dispatched_request.has_value());
+  EXPECT_NEAR(dispatched_request->goal_pose.pose.position.x, 8.5, 1e-9);
+  EXPECT_NEAR(dispatched_request->goal_pose.pose.position.y, 5.5, 1e-9);
+  ASSERT_EQ(dispatched_request->frontier_sequence.size(), 1U);
+  EXPECT_TRUE(core.are_frontiers_equivalent(
+    dispatched_request->frontier_sequence.front(),
+    make_frontier(8.5, 5.5)));
+}
+
 TEST(PreemptionFlowTests, DispatchSkipImmediatelySuppressesBlockedFrontierRegion)
 {
   FrontierExplorerCoreParams params;

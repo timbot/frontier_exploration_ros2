@@ -105,6 +105,10 @@ frontier_explorer:
     connected_retarget_min_interval_s: 0.0
     connected_retarget_min_frontier_progress_m: 0.0
 
+    # Reject ordinary reachable endpoints that move away from their own
+    # information frontier. Negative disables; escape dispatches bypass it.
+    dispatch_min_frontier_progress_m: -1.0
+
     # Skip the active frontier goal if it becomes blocked.
     goal_skip_on_blocked_goal: false
 

@@ -146,6 +146,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("dispatch_clearance_radius_m", 0.0);
   this->declare_parameter<bool>("dispatch_requires_known_free_costmap", false);
   this->declare_parameter<double>("dispatch_costmap_cost_penalty_m", 0.0);
+  this->declare_parameter<double>("dispatch_min_frontier_progress_m", -1.0);
   this->declare_parameter<double>("undispatchable_frontier_retry_interval_s", 0.0);
   this->declare_parameter<std::string>("goal_yaw_policy", "path_direction");
   this->declare_parameter<bool>("goal_preemption_enabled", false);
@@ -232,6 +233,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "dispatch_requires_known_free_costmap").as_bool();
   params_.dispatch_costmap_cost_penalty_m = this->get_parameter(
     "dispatch_costmap_cost_penalty_m").as_double();
+  params_.dispatch_min_frontier_progress_m = this->get_parameter(
+    "dispatch_min_frontier_progress_m").as_double();
   params_.undispatchable_frontier_retry_interval_s = this->get_parameter(
     "undispatchable_frontier_retry_interval_s").as_double();
   params_.goal_yaw_policy = this->get_parameter("goal_yaw_policy").as_string();
