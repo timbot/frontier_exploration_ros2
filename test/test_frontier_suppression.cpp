@@ -73,12 +73,13 @@ FrontierCandidate make_candidate(double x, double y)
   return FrontierCandidate{{x, y}, {x, y}, 8};
 }
 
-nav_msgs::msg::OccupancyGrid build_grid(int width, int height, int default_value)
+nav_msgs::msg::OccupancyGrid build_grid(
+  int width, int height, int default_value, double resolution = 1.0)
 {
   nav_msgs::msg::OccupancyGrid msg;
   msg.info.width = static_cast<uint32_t>(width);
   msg.info.height = static_cast<uint32_t>(height);
-  msg.info.resolution = 1.0;
+  msg.info.resolution = resolution;
   msg.info.origin.position.x = 0.0;
   msg.info.origin.position.y = 0.0;
   msg.info.origin.orientation.w = 1.0;
@@ -893,6 +894,30 @@ TEST(FrontierDispatchResolutionTests, TrimsOccupiedTargetWhenExplicitClearanceCh
     std::sqrt(2.0),
     1e-9);
   EXPECT_FALSE(resolved->first == 5.5 && resolved->second == 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, KeepsFootprintMarginFromThinFurniture)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.dispatch_clearance_radius_m = 0.344;
+  auto map_msg = build_grid(60, 20, 0, 0.05);
+  auto costmap_msg = build_grid(60, 20, 0, 0.05);
+  set_grid_cell(map_msg, 40, 10, 100);
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  const auto obstacle = map_msg.info.origin.position.x + (40.5 * 0.05);
+  const auto target_y = map_msg.info.origin.position.y + (10.5 * 0.05);
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(obstacle, target_y),
+    make_pose(0.275, target_y));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_GE(std::hypot(resolved->first - obstacle, resolved->second - target_y), 0.344);
 }
 
 TEST(FrontierDispatchResolutionTests, RejectsSuppressedFrontierGoal)
