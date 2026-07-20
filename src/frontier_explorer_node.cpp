@@ -511,6 +511,12 @@ bool FrontierExplorerNode::quitRequested() const
   return quit_requested_;
 }
 
+bool FrontierExplorerNode::hasPendingMapUpdate() const
+{
+  std::lock_guard<std::mutex> lock(pending_map_mutex_);
+  return pending_map_update_;
+}
+
 void FrontierExplorerNode::createMapSubscription(rclcpp::DurabilityPolicy map_durability)
 {
   map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
@@ -526,7 +532,9 @@ void FrontierExplorerNode::ensureMapProcessingTimer()
     return;
   }
 
-  if (!effective_map_processing_rate_hz_.has_value() || *effective_map_processing_rate_hz_ <= 0.0) {
+  const double processing_rate_hz = effective_map_processing_rate_hz_.value_or(
+    params_.map_processing_rate_hz);
+  if (processing_rate_hz <= 0.0) {
     return;
   }
 
@@ -536,7 +544,7 @@ void FrontierExplorerNode::ensureMapProcessingTimer()
 
   map_processing_timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::duration<double>(1.0 / *effective_map_processing_rate_hz_)),
+      std::chrono::duration<double>(1.0 / processing_rate_hz)),
     std::bind(&FrontierExplorerNode::mapProcessingTimerCallback, this));
 }
 
@@ -593,6 +601,10 @@ bool FrontierExplorerNode::maybeFinalizeMapProcessingRateEstimate()
       *effective_map_processing_rate_hz_);
   }
 
+  if (map_processing_timer_) {
+    map_processing_timer_->cancel();
+    map_processing_timer_.reset();
+  }
   ensureMapProcessingTimer();
   return true;
 }
@@ -642,6 +654,11 @@ void FrontierExplorerNode::startExplorationRuntime()
       ensureMapProcessingTimer();
     } else {
       resetMapProcessingCalibrationWindow();
+      // Process the first map at the configured rate while observing the
+      // publisher cadence. Waiting for several slow-map intervals before
+      // creating any timer can leave a live explorer unable to make its
+      // first decision for tens of seconds.
+      ensureMapProcessingTimer();
     }
   }
 

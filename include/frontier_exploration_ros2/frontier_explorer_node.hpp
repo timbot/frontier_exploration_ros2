@@ -51,6 +51,7 @@ public:
   bool hasActiveExplorationSubscriptions() const;
   bool hasControlService() const;
   bool quitRequested() const;
+  bool hasPendingMapUpdate() const;
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -165,7 +166,7 @@ private:
 
   // Startup-only map QoS autodetect state.
   std::mutex map_autodetect_mutex_;
-  std::mutex pending_map_mutex_;
+  mutable std::mutex pending_map_mutex_;
   bool map_received_once_{false};
   bool map_autodetect_complete_logged_{false};
   std::chrono::steady_clock::time_point map_autodetect_started_at_;

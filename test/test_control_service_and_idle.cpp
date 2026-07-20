@@ -676,7 +676,10 @@ protected:
     }
   }
 
-  void create_node(bool autostart, bool control_service_enabled = true)
+  void create_node(
+    bool autostart,
+    bool control_service_enabled = true,
+    double map_processing_rate_hz = 1.0)
   {
     rclcpp::NodeOptions options;
     options.parameter_overrides({
@@ -684,6 +687,7 @@ protected:
       rclcpp::Parameter("control_service_enabled", control_service_enabled),
       rclcpp::Parameter("completion_event_enabled", false),
       rclcpp::Parameter("frontier_suppression_enabled", false),
+      rclcpp::Parameter("map_processing_rate_hz", map_processing_rate_hz),
     });
     node_ = std::make_shared<FrontierExplorerNode>(options);
     executor_->add_node(node_);
@@ -794,6 +798,30 @@ TEST_F(FrontierControlNodeTests, AutostartTrueCreatesSubscriptions)
   ASSERT_TRUE(wait_for_condition(
     [this]() { return node_->hasActiveExplorationSubscriptions(); },
     std::chrono::milliseconds(2000)));
+}
+
+TEST_F(FrontierControlNodeTests, FirstMapIsProcessedBeforeRateCalibrationCompletes)
+{
+  create_node(true, true, 2.0);
+  ASSERT_TRUE(wait_for_condition(
+    [this]() { return node_->hasActiveExplorationSubscriptions(); },
+    std::chrono::milliseconds(2000)));
+
+  auto map_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+  map_qos.reliable();
+  map_qos.transient_local();
+  auto map_publisher = helper_node_->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    "/map", map_qos);
+  auto map = build_grid(10, 10, -1);
+  map.header.frame_id = "map";
+  map_publisher->publish(map);
+
+  ASSERT_TRUE(wait_for_condition(
+    [this]() { return node_->hasPendingMapUpdate(); },
+    std::chrono::milliseconds(250)));
+  EXPECT_TRUE(wait_for_condition(
+    [this]() { return !node_->hasPendingMapUpdate(); },
+    std::chrono::milliseconds(1000)));
 }
 
 TEST_F(FrontierControlNodeTests, ControlServiceCanBeDisabledWhenAutostartIsTrue)
