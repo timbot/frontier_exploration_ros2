@@ -66,6 +66,9 @@ FrontierExplorerCore::FrontierExplorerCore(
   params.exploration_boundary_radius_m = std::max(
     0.0,
     params.exploration_boundary_radius_m);
+  params.startup_heading_preference_max_translation_m = std::max(
+    0.0,
+    params.startup_heading_preference_max_translation_m);
   // Solver bounds are clamped once at core construction so ordering code can assume
   // positive limits while still honoring smaller candidate sets at runtime.
   params.dp_solver_candidate_limit = std::clamp<std::size_t>(

@@ -42,6 +42,51 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     return {};
   }
 
+  const auto apply_startup_heading_preference =
+    [&](const FrontierSequence & sequence) -> FrontierSequence {
+      if (params.startup_heading_preference_max_translation_m <= 0.0 ||
+        !start_pose.has_value())
+      {
+        return sequence;
+      }
+      const double startup_translation_m = std::hypot(
+        current_pose.position.x - start_pose->pose.position.x,
+        current_pose.position.y - start_pose->pose.position.y);
+      if (startup_translation_m > params.startup_heading_preference_max_translation_m) {
+        return sequence;
+      }
+
+      const double current_yaw = detail::yaw_from_quaternion(current_pose.orientation);
+      const auto heading_error = [&](const FrontierLike & frontier) {
+          const auto [target_x, target_y] = frontier_position(frontier);
+          const double target_yaw = std::atan2(
+            target_y - current_pose.position.y,
+            target_x - current_pose.position.x);
+          return std::abs(std::atan2(
+              std::sin(target_yaw - current_yaw),
+              std::cos(target_yaw - current_yaw)));
+        };
+
+      FrontierSequence preferred = sequence;
+      std::stable_sort(
+        preferred.begin(),
+        preferred.end(),
+        [&](const FrontierLike & lhs, const FrontierLike & rhs) {
+          return heading_error(lhs) < heading_error(rhs);
+        });
+      if (debug_outputs_enabled() && !preferred.empty() &&
+        !are_frontiers_equivalent(preferred.front(), sequence.front()))
+      {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2)
+            << "Startup heading preference reordered initial frontier: translation="
+            << startup_translation_m << "m, selected_heading_error="
+            << heading_error(preferred.front()) << "rad";
+        callbacks.log_debug(oss.str());
+      }
+      return preferred;
+    };
+
   const double pose_quantum = std::max(params.frontier_visit_tolerance, 0.1);
   const int pose_x_bucket = detail::quantize_bucket(current_pose.position.x, pose_quantum);
   const int pose_y_bucket = detail::quantize_bucket(current_pose.position.y, pose_quantum);
@@ -71,7 +116,7 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
       callbacks.log_debug(
         "mrtsp_order_cache: hit, frontiers=" + std::to_string(bounded_frontiers.size()));
     }
-    return mrtsp_order_cache->frontier_sequence;
+    return apply_startup_heading_preference(mrtsp_order_cache->frontier_sequence);
   }
 
   const std::vector<FrontierCandidate> & candidates = bounded_frontiers;
@@ -232,7 +277,7 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
       ", ordered=" + std::to_string(ordered_frontiers.size()) +
       ", solver=" + params.mrtsp_solver);
   }
-  return ordered_frontiers;
+  return apply_startup_heading_preference(ordered_frontiers);
 }
 
 std::pair<double, double> FrontierExplorerCore::frontier_position(const FrontierLike & frontier) const

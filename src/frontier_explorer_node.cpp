@@ -132,6 +132,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("max_linear_speed_vmax", 0.5);
   this->declare_parameter<double>("max_angular_speed_wmax", 1.0);
   this->declare_parameter<double>("exploration_boundary_radius_m", 0.0);
+  this->declare_parameter<double>("startup_heading_preference_max_translation_m", 0.0);
   // Solver selection stays MRTSP-specific, while the bounded-DP limits are named
   // by algorithm so the same controls can describe other DP-based route policies.
   this->declare_parameter<std::string>("mrtsp_solver", "dp");
@@ -210,6 +211,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   params_.max_angular_speed_wmax = this->get_parameter("max_angular_speed_wmax").as_double();
   params_.exploration_boundary_radius_m = this->get_parameter(
     "exploration_boundary_radius_m").as_double();
+  params_.startup_heading_preference_max_translation_m = this->get_parameter(
+    "startup_heading_preference_max_translation_m").as_double();
   params_.mrtsp_solver = this->get_parameter("mrtsp_solver").as_string();
   // ROS parameters are read as signed integers, then converted to positive size_t
   // limits before they enter the solver configuration.
@@ -425,7 +428,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     debugOutputsEnabled() ? "debug-log-level" : "disabled");
   RCLCPP_INFO(
     this->get_logger(),
-    "MRTSP config: solver='%s', dp_candidate_limit=%zu, dp_planning_horizon=%zu, sensor_effective_range_m=%.2f, weight_distance_wd=%.2f, weight_gain_ws=%.2f, max_linear_speed_vmax=%.2f, max_angular_speed_wmax=%.2f",
+    "MRTSP config: solver='%s', dp_candidate_limit=%zu, dp_planning_horizon=%zu, sensor_effective_range_m=%.2f, weight_distance_wd=%.2f, weight_gain_ws=%.2f, max_linear_speed_vmax=%.2f, max_angular_speed_wmax=%.2f, startup_heading_preference_max_translation_m=%.2f",
     core_->params.mrtsp_solver.c_str(),
     core_->params.dp_solver_candidate_limit,
     core_->params.dp_planning_horizon,
@@ -433,7 +436,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     params_.weight_distance_wd,
     params_.weight_gain_ws,
     params_.max_linear_speed_vmax,
-    params_.max_angular_speed_wmax);
+    params_.max_angular_speed_wmax,
+    params_.startup_heading_preference_max_translation_m);
   RCLCPP_INFO(
     this->get_logger(),
     "Using post-goal settle config: enabled=%s, post_goal_min_settle=%.2fs, map_processing_rate_hz=%.2f, all_frontiers_suppressed_behavior=%s",

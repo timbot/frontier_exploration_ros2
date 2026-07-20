@@ -103,6 +103,7 @@ frontier_explorer:
 
     # Optional stability gates for connectivity-driven endpoint replacement.
     connected_retarget_min_interval_s: 0.0
+    startup_heading_preference_max_translation_m: 0.0
     connected_retarget_min_frontier_progress_m: 0.0
 
     # Reject ordinary reachable endpoints that move away from their own

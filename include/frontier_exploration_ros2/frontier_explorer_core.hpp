@@ -83,6 +83,9 @@ struct FrontierExplorerCoreParams
   double max_linear_speed_vmax{0.5};
   double max_angular_speed_wmax{1.0};
   double exploration_boundary_radius_m{0.0};
+  // During initial egress, prefer frontiers that require the least rotation.
+  // Zero disables the preference and preserves pure MRTSP ordering.
+  double startup_heading_preference_max_translation_m{0.0};
   // MRTSP can traverse its cost matrix greedily or with bounded dynamic programming.
   std::string mrtsp_solver{"dp"};
   // DP limits are algorithm-level controls for the MRTSP solver.

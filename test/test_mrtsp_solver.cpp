@@ -55,12 +55,13 @@ CostWeights make_weights()
   return weights;
 }
 
-geometry_msgs::msg::Pose make_pose(double x, double y)
+geometry_msgs::msg::Pose make_pose(double x, double y, double yaw = 0.0)
 {
   geometry_msgs::msg::Pose pose;
   pose.position.x = x;
   pose.position.y = y;
-  pose.orientation.w = 1.0;
+  pose.orientation.z = std::sin(yaw / 2.0);
+  pose.orientation.w = std::cos(yaw / 2.0);
   return pose;
 }
 
@@ -302,6 +303,45 @@ TEST(MrtspSolverTests, DpModeAppendsFallbackCandidatesAndBypassesCacheReuse)
   EXPECT_EQ(dp_sequence.size(), 3U);
   EXPECT_TRUE(core.are_frontiers_equivalent(dp_sequence.front(), frontiers.front()));
   EXPECT_EQ(core.mrtsp_order_cache_misses, 2);
+}
+
+TEST(MrtspSolverTests, StartupHeadingPreferenceOnlyReordersInitialEgress)
+{
+  // Reproduce the 2026-07-20 dock egress geometry. The high-gain southeast
+  // frontier wins the route cost, but the west frontier is nearly aligned
+  // with the robot and avoids an initial rotation toward dock furniture.
+  FrontierExplorerCoreParams baseline_params;
+  baseline_params.mrtsp_solver = "greedy";
+  baseline_params.sensor_effective_range_m = 0.0;
+  FrontierExplorerCoreCallbacks callbacks;
+  FrontierExplorerCore baseline(baseline_params, callbacks);
+
+  const auto start = make_pose(-0.1668, -0.1038, 3.1105);
+  const FrontierSequence frontiers = FrontierExplorerCore::to_frontier_sequence(
+    {
+      FrontierCandidate{{-1.34, -1.18}, {-1.34, -1.18}, 100},
+      FrontierCandidate{{-2.24, 0.06}, {-2.24, 0.06}, 1},
+    });
+  baseline.record_start_pose(start);
+  const auto route_order = baseline.build_mrtsp_frontier_sequence(frontiers, start);
+  ASSERT_EQ(route_order.size(), 2U);
+  EXPECT_TRUE(baseline.are_frontiers_equivalent(route_order.front(), frontiers.front()));
+
+  auto preferred_params = baseline_params;
+  preferred_params.startup_heading_preference_max_translation_m = 0.5;
+  FrontierExplorerCore preferred(preferred_params, callbacks);
+  preferred.record_start_pose(start);
+  const auto egress_order = preferred.build_mrtsp_frontier_sequence(frontiers, start);
+  ASSERT_EQ(egress_order.size(), 2U);
+  EXPECT_TRUE(preferred.are_frontiers_equivalent(egress_order.front(), frontiers.back()));
+
+  const auto after_egress = make_pose(-0.70, -0.1038, 3.1105);
+  const auto resumed_route_order = preferred.build_mrtsp_frontier_sequence(
+    frontiers,
+    after_egress);
+  ASSERT_EQ(resumed_route_order.size(), 2U);
+  EXPECT_TRUE(
+    preferred.are_frontiers_equivalent(resumed_route_order.front(), frontiers.front()));
 }
 
 }  // namespace
