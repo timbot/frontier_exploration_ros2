@@ -551,10 +551,12 @@ private:
   void suppress_failed_frontier_goal(
     const std::optional<FrontierLike> & frontier,
     const FrontierSequence & frontier_sequence,
-    const std::string & reason);
+    const std::string & reason,
+    bool bypass_startup_grace = false);
   void suppress_blocked_frontier_region(
     const FrontierLike & frontier,
-    const std::string & reason);
+    const std::string & reason,
+    bool bypass_startup_grace = false);
   void clear_active_goal_progress_state();
   void clear_active_goal_euclidean_progress_state();
   void start_active_goal_progress_tracking();

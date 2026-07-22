@@ -737,6 +737,40 @@ TEST(FrontierSuppressionCoreTests, StartupGracePeriodDefersSuppressionFailures)
   EXPECT_EQ(core.suppressed_region_count(), 1U);
 }
 
+TEST(FrontierSuppressionCoreTests, SafetyBlockBypassesStartupGraceAndStopsRedispatch)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.frontier_suppression_startup_grace_period_s = 15.0;
+  core->start_exploration_session();
+
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+
+  core->try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 1);
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_response_callback(core->current_dispatch_id, fake_handle, true, "");
+
+  core->handle_navigation_blocked_event("depth guard stop");
+
+  EXPECT_EQ(core->suppressed_region_count(), 1U);
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  fake_handle->resolve_cancel(true, "");
+  core->get_result_callback(
+    core->current_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_CANCELED,
+    0,
+    "");
+  core->try_send_next_goal();
+  EXPECT_EQ(dispatch_calls, 1);
+}
+
 TEST(FrontierDispatchResolutionTests, PreservesReachableFrontierGoal)
 {
   int64_t now_ns = 0;

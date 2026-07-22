@@ -292,7 +292,8 @@ void FrontierExplorerCore::handle_navigation_blocked_event(const std::string & r
   suppress_failed_frontier_goal(
     active_goal_frontier,
     active_goal_frontiers,
-    cancel_reason + ": " + reason);
+    cancel_reason + ": " + reason,
+    true);
   request_active_goal_cancel(cancel_reason);
 }
 

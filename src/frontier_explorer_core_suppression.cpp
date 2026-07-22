@@ -101,24 +101,30 @@ void FrontierExplorerCore::record_failed_frontier_attempt(
 void FrontierExplorerCore::suppress_failed_frontier_goal(
   const std::optional<FrontierLike> & frontier,
   const FrontierSequence & frontier_sequence,
-  const std::string & reason)
+  const std::string & reason,
+  bool bypass_startup_grace)
 {
   if (frontier.has_value()) {
-    suppress_blocked_frontier_region(*frontier, reason);
+    suppress_blocked_frontier_region(*frontier, reason, bypass_startup_grace);
     return;
   }
 
   if (!frontier_sequence.empty()) {
-    suppress_blocked_frontier_region(frontier_sequence.front(), reason);
+    suppress_blocked_frontier_region(
+      frontier_sequence.front(), reason, bypass_startup_grace);
   }
 }
 
 void FrontierExplorerCore::suppress_blocked_frontier_region(
   const FrontierLike & frontier,
-  const std::string & reason)
+  const std::string & reason,
+  bool bypass_startup_grace)
 {
   const int64_t now_ns = callbacks.now_ns();
-  if (!suppression_runtime_active(now_ns)) {
+  if (
+    !suppression_enabled() ||
+    (!bypass_startup_grace && !suppression_runtime_active(now_ns)))
+  {
     return;
   }
   FrontierSuppression * suppression = ensure_frontier_suppression();
