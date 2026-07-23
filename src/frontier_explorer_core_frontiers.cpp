@@ -787,6 +787,19 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
   const bool require_known_free_costmap =
     params.dispatch_requires_known_free_costmap && costmap.has_value();
 
+  const auto grid_coordinates_match_map =
+    [this](const OccupancyGrid2d & grid) {
+      if (!map.has_value()) {
+        return true;
+      }
+      const auto & map_frame = map->map().header.frame_id;
+      const auto & grid_frame = grid.map().header.frame_id;
+      // Empty frame IDs are common in synthetic/unit-test grids. Preserve
+      // their historical same-coordinate behavior while refusing to apply a
+      // live rolling odom costmap directly to map-frame world coordinates.
+      return map_frame.empty() || grid_frame.empty() || map_frame == grid_frame;
+    };
+
   const auto point_blocked_for_connectivity =
     [&](const std::pair<double, double> & world_point) {
       // The global and local costmaps are already inflated for the robot
@@ -801,13 +814,17 @@ std::optional<std::pair<double, double>> FrontierExplorerCore::resolve_dispatch_
         return true;
       }
       if (enforce_costmap_reachability) {
-        const auto global_cost = world_point_cost(costmap, world_point);
-        if (global_cost.has_value() && *global_cost >= params.occ_threshold) {
-          return true;
+        if (!costmap.has_value() || grid_coordinates_match_map(*costmap)) {
+          const auto global_cost = world_point_cost(costmap, world_point);
+          if (global_cost.has_value() && *global_cost >= params.occ_threshold) {
+            return true;
+          }
         }
-        const auto local_cost = world_point_cost(local_costmap, world_point);
-        if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
-          return true;
+        if (!local_costmap.has_value() || grid_coordinates_match_map(*local_costmap)) {
+          const auto local_cost = world_point_cost(local_costmap, world_point);
+          if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
+            return true;
+          }
         }
       }
       return false;

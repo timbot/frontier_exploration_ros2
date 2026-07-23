@@ -919,6 +919,63 @@ TEST(FrontierDispatchResolutionTests, TrimsFrontierGoalToReachableCellBeforeCost
   EXPECT_DOUBLE_EQ(resolved->second, 2.5);
 }
 
+TEST(FrontierDispatchResolutionTests, IgnoresLocalCostmapInDifferentCoordinateFrame)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.dispatch_clearance_radius_m = 0.344;
+
+  auto map_msg = build_grid(10, 5, 0);
+  map_msg.header.frame_id = "map";
+  auto global_costmap_msg = build_grid(10, 5, 0);
+  global_costmap_msg.header.frame_id = "map";
+  auto local_costmap_msg = build_grid(10, 5, 100);
+  local_costmap_msg.header.frame_id = "odom";
+
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(global_costmap_msg);
+  core->local_costmap = OccupancyGrid2d(local_costmap_msg);
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 8.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
+TEST(FrontierDispatchResolutionTests, SameFrameLocalCostmapStillBlocksConnectivity)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.dispatch_clearance_radius_m = 0.344;
+
+  auto map_msg = build_grid(10, 5, 0);
+  map_msg.header.frame_id = "map";
+  auto global_costmap_msg = build_grid(10, 5, 0);
+  global_costmap_msg.header.frame_id = "map";
+  auto local_costmap_msg = build_grid(10, 5, 0);
+  local_costmap_msg.header.frame_id = "map";
+  for (int y = 0; y < 5; ++y) {
+    set_grid_cell(local_costmap_msg, 4, y, 100);
+  }
+
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(global_costmap_msg);
+  core->local_costmap = OccupancyGrid2d(local_costmap_msg);
+
+  const auto resolved = core->resolve_dispatch_goal_point(
+    make_candidate(8.5, 2.5),
+    make_pose(1.5, 2.5));
+
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_DOUBLE_EQ(resolved->first, 3.5);
+  EXPECT_DOUBLE_EQ(resolved->second, 2.5);
+}
+
 TEST(FrontierDispatchResolutionTests, LetsNav2TryGoalBeyondCostmapWallWhenBlockedGoalSkipDisabled)
 {
   int64_t now_ns = 0;
