@@ -123,6 +123,7 @@ private:
   bool map_qos_autodetect_on_startup_{false};
   double map_qos_autodetect_timeout_s_{2.0};
   int watchdog_collision_stop_block_threshold_{0};
+  int active_goal_attributed_stop_count_{0};
 
   enum class RuntimeState
   {

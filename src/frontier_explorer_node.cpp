@@ -31,7 +31,6 @@ limitations under the License.
 #include <cstddef>
 #include <cmath>
 #include <optional>
-#include <regex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -46,22 +45,6 @@ namespace
 
 constexpr std::size_t kStartupMapRateSampleCount = 3;
 constexpr double kStartupMapRateStabilityTolerance = 0.25;
-
-std::optional<int> extract_json_int_field(
-  const std::string & payload,
-  const std::string & field)
-{
-  const std::regex pattern("\"" + field + "\"\\s*:\\s*(-?[0-9]+)");
-  std::smatch match;
-  if (!std::regex_search(payload, match, pattern) || match.size() < 2) {
-    return std::nullopt;
-  }
-  try {
-    return std::stoi(match[1].str());
-  } catch (const std::exception &) {
-    return std::nullopt;
-  }
-}
 
 // Adapts Nav2 goal handle API to the core's transport-agnostic interface.
 class NavigateGoalHandleAdapter : public GoalHandleInterface
@@ -386,6 +369,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
           std::chrono::duration<double>(timeout_sec)));
     };
   callbacks.dispatch_goal_request = [this](const GoalDispatchRequest & request) {
+      // Watchdog payload counts describe a rolling time window, not the
+      // currently dispatched goal. Count fresh attributed events per goal so
+      // a new candidate does not inherit the previous candidate's vetoes.
+      active_goal_attributed_stop_count_ = 0;
       this->dispatchGoalRequest(request);
     };
   callbacks.publish_frontier_markers = [this](const FrontierSequence & frontiers) {
@@ -1261,22 +1248,32 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
     return;
   }
 
-  if (!attributed_watchdog_stop_requests_frontier_block(
-      msg->data, watchdog_collision_stop_block_threshold_))
+  if (
+    watchdog_collision_stop_block_threshold_ <= 0 ||
+    !attributed_watchdog_stop_requests_frontier_block(msg->data, 1))
   {
     return;
   }
 
-  const int recent_safety_stops = extract_json_int_field(
-    msg->data,
-    "recent_safety_stops").value_or(
-    extract_json_int_field(msg->data, "recent_collision_stops").value_or(1));
+  ++active_goal_attributed_stop_count_;
+  if (
+    active_goal_attributed_stop_count_ <
+    watchdog_collision_stop_block_threshold_)
+  {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Navigation watchdog reported fresh attributed safety stop "
+      "(%d/%d for active goal); retaining goal",
+      active_goal_attributed_stop_count_,
+      watchdog_collision_stop_block_threshold_);
+    return;
+  }
 
   RCLCPP_WARN(
     this->get_logger(),
-    "Navigation watchdog reported attributed safety stops "
-    "(%d >= %d); treating active frontier as blocked: %s",
-    recent_safety_stops,
+    "Navigation watchdog reported fresh attributed safety stops "
+    "(%d >= %d for active goal); treating active frontier as blocked: %s",
+    active_goal_attributed_stop_count_,
     watchdog_collision_stop_block_threshold_,
     msg->data.c_str());
   clearCostmapsAfterAttributedSafetyStop();
