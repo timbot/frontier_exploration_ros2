@@ -155,6 +155,45 @@ TEST(ControlCoreSessionTests, RepeatedUndispatchableFrontierSetIsRateLimited)
   EXPECT_EQ(rejection_count(), 2);
 }
 
+TEST(ControlCoreSessionTests, UndispatchableFrontiersCompleteAdvancingPolicy)
+{
+  int completion_calls = 0;
+  FrontierExplorerCoreParams params;
+  params.frontier_map_optimization_enabled = false;
+  params.all_frontiers_suppressed_behavior = "complete";
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{1'000'000'000};};
+  callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(1.5, 1.5));
+    };
+  callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {make_frontier(8.5, 8.5, 20)};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+  callbacks.on_exploration_complete = [&completion_calls]() {
+      ++completion_calls;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  core.map = OccupancyGrid2d(build_grid(10, 10, 100));
+  core.costmap = OccupancyGrid2d(build_grid(10, 10, 100));
+
+  core.try_send_next_goal();
+  core.try_send_next_goal();
+
+  EXPECT_EQ(completion_calls, 1);
+}
+
 TEST(ControlCoreSessionTests, StartExplorationSessionResetsSessionState)
 {
   FrontierExplorerCoreCallbacks callbacks;

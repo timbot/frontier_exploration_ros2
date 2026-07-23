@@ -1111,6 +1111,13 @@ bool FrontierExplorerCore::send_frontier_goal(
   }
 
   if (dispatch_index >= frontier_sequence.size()) {
+    if (should_complete_when_all_frontiers_suppressed()) {
+      callbacks.log_info(
+        "All selected frontier goals are blocked, unsafe, suppressed, or "
+        "too close before dispatch; completing exploration");
+      handle_exploration_complete(current_pose);
+      return false;
+    }
     callbacks.log_info(
       "All selected frontier goals are blocked, unsafe, suppressed, or too close before dispatch; "
       "waiting for updated costmap or frontier data");
