@@ -18,11 +18,38 @@ limitations under the License.
 
 #include <cmath>
 #include <iomanip>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 
 namespace frontier_exploration_ros2
 {
+
+bool attributed_watchdog_stop_requests_frontier_block(
+  const std::string & payload,
+  int stop_threshold)
+{
+  if (stop_threshold <= 0) {
+    return false;
+  }
+  const std::regex event_pattern(
+    "\"event\"\\s*:\\s*\"(collision_stop|depth_guard_stop)\"");
+  if (!std::regex_search(payload, event_pattern)) {
+    return false;
+  }
+  const std::regex count_pattern(
+    "\"(recent_safety_stops|recent_collision_stops)\"\\s*:\\s*([0-9]+)");
+  std::smatch match;
+  int count = 1;
+  if (std::regex_search(payload, match, count_pattern) && match.size() >= 3) {
+    try {
+      count = std::stoi(match[2].str());
+    } catch (const std::exception &) {
+      count = 1;
+    }
+  }
+  return count >= stop_threshold;
+}
 
 bool FrontierExplorerCore::suppression_enabled() const
 {

@@ -38,6 +38,10 @@ limitations under the License.
 namespace frontier_exploration_ros2
 {
 
+bool attributed_watchdog_stop_requests_frontier_block(
+  const std::string & payload,
+  int stop_threshold);
+
 // Minimal adapter interface that allows core tests to mock action goal handles.
 class GoalHandleInterface
 {

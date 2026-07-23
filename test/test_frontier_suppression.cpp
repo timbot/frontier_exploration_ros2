@@ -771,6 +771,32 @@ TEST(FrontierSuppressionCoreTests, SafetyBlockBypassesStartupGraceAndStopsRedisp
   EXPECT_EQ(dispatch_calls, 1);
 }
 
+TEST(FrontierSuppressionCoreTests, AttributedCollisionStopRequestsFrontierBlock)
+{
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"collision_stop","recent_safety_stops":1})", 1));
+}
+
+TEST(FrontierSuppressionCoreTests, AttributedDepthStopRequestsFrontierBlock)
+{
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","recent_safety_stops":1})", 1));
+}
+
+TEST(FrontierSuppressionCoreTests, UnknownStopNeverRequestsFrontierBlock)
+{
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"safety_stop_unknown","recent_safety_stops":4})", 1));
+}
+
+TEST(FrontierSuppressionCoreTests, AttributedStopHonorsConfiguredThreshold)
+{
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","recent_safety_stops":1})", 2));
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","recent_safety_stops":2})", 2));
+}
+
 TEST(FrontierDispatchResolutionTests, PreservesReachableFrontierGoal)
 {
   int64_t now_ns = 0;

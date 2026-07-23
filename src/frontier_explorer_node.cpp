@@ -1243,25 +1243,22 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
     return;
   }
 
-  if (
-    watchdog_collision_stop_block_threshold_ <= 0 ||
-    msg->data.find("collision_stop") == std::string::npos)
+  if (!attributed_watchdog_stop_requests_frontier_block(
+      msg->data, watchdog_collision_stop_block_threshold_))
   {
     return;
   }
 
-  const int recent_collision_stops = extract_json_int_field(
+  const int recent_safety_stops = extract_json_int_field(
     msg->data,
-    "recent_collision_stops").value_or(1);
-  if (recent_collision_stops < watchdog_collision_stop_block_threshold_) {
-    return;
-  }
+    "recent_safety_stops").value_or(
+    extract_json_int_field(msg->data, "recent_collision_stops").value_or(1));
 
   RCLCPP_WARN(
     this->get_logger(),
-    "Navigation watchdog reported repeated collision stops "
+    "Navigation watchdog reported attributed safety stops "
     "(%d >= %d); treating active frontier as blocked: %s",
-    recent_collision_stops,
+    recent_safety_stops,
     watchdog_collision_stop_block_threshold_,
     msg->data.c_str());
   core_->handle_navigation_blocked_event(msg->data);
