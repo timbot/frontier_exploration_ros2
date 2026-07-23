@@ -259,6 +259,15 @@ void FrontierExplorerCore::start_exploration_session()
     frontier_suppression_activation_ns_ =
       callbacks.now_ns() +
       static_cast<int64_t>(params.frontier_suppression_startup_grace_period_s * 1e9);
+    FrontierSuppression * suppression = ensure_frontier_suppression();
+    if (suppression) {
+      for (const auto & point : params.initial_suppressed_points) {
+        suppression->suppress_region(
+          FrontierLike(point, point, 1),
+          callbacks.now_ns(),
+          callbacks.log_warn);
+      }
+    }
   }
 }
 

@@ -797,6 +797,19 @@ TEST(FrontierSuppressionCoreTests, AttributedStopHonorsConfiguredThreshold)
     R"({"event":"depth_guard_stop","recent_safety_stops":2})", 2));
 }
 
+TEST(FrontierSuppressionCoreTests, InitialSuppressedPointSurvivesWorkerRestart)
+{
+  int64_t now_ns = 0;
+  int dispatch_calls = 0;
+  auto core = make_suppression_core(&now_ns, &dispatch_calls);
+  core->params.initial_suppressed_points = {{4.0, 4.0}};
+
+  core->start_exploration_session();
+  EXPECT_EQ(core->suppressed_region_count(), 1U);
+  core->try_send_next_goal();
+  EXPECT_EQ(dispatch_calls, 0);
+}
+
 TEST(FrontierDispatchResolutionTests, PreservesReachableFrontierGoal)
 {
   int64_t now_ns = 0;

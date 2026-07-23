@@ -160,6 +160,7 @@ struct FrontierExplorerCoreParams
   double frontier_suppression_startup_grace_period_s{15.0};
   int frontier_suppression_max_attempt_records{256};
   int frontier_suppression_max_regions{64};
+  std::vector<std::pair<double, double>> initial_suppressed_points;
 };
 
 // Host callbacks injected by the node wrapper (time, TF pose, action transport, logging).

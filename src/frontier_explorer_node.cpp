@@ -176,6 +176,9 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("frontier_suppression_startup_grace_period_s", 15.0);
   this->declare_parameter<int>("frontier_suppression_max_attempt_records", 256);
   this->declare_parameter<int>("frontier_suppression_max_regions", 64);
+  this->declare_parameter(
+    "initial_suppressed_points",
+    rclcpp::ParameterValue(std::vector<double>{}));
   this->declare_parameter<bool>("completion_event_enabled", false);
   this->declare_parameter<std::string>("completion_event_topic", "exploration_complete");
 
@@ -286,6 +289,17 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "frontier_suppression_max_attempt_records").as_int();
   params_.frontier_suppression_max_regions = this->get_parameter(
     "frontier_suppression_max_regions").as_int();
+  const auto initial_suppressed_points =
+    this->get_parameter("initial_suppressed_points").as_double_array();
+  if (initial_suppressed_points.size() % 2U != 0U) {
+    throw std::runtime_error(
+            "initial_suppressed_points must contain x,y pairs");
+  }
+  for (std::size_t index = 0; index < initial_suppressed_points.size(); index += 2U) {
+    params_.initial_suppressed_points.emplace_back(
+      initial_suppressed_points[index],
+      initial_suppressed_points[index + 1U]);
+  }
   completion_event_config_.enabled = this->get_parameter("completion_event_enabled").as_bool();
   completion_event_config_.topic = this->get_parameter("completion_event_topic").as_string();
   if (completion_event_config_.enabled && completion_event_config_.topic.empty()) {
