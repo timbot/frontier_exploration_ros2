@@ -336,6 +336,10 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   navigate_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(
     this,
     params_.navigate_to_pose_action_name);
+  clear_global_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+    "global_costmap/clear_entirely_global_costmap");
+  clear_local_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+    "local_costmap/clear_entirely_local_costmap");
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   if (completion_event_config_.enabled) {
@@ -1275,7 +1279,35 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
     recent_safety_stops,
     watchdog_collision_stop_block_threshold_,
     msg->data.c_str());
+  clearCostmapsAfterAttributedSafetyStop();
   core_->handle_navigation_blocked_event(msg->data);
+}
+
+void FrontierExplorerNode::clearCostmapsAfterAttributedSafetyStop()
+{
+  using ClearEntireCostmap = nav2_msgs::srv::ClearEntireCostmap;
+
+  bool requested = false;
+  if (clear_global_costmap_client_->service_is_ready()) {
+    clear_global_costmap_client_->async_send_request(
+      std::make_shared<ClearEntireCostmap::Request>());
+    requested = true;
+  }
+  if (clear_local_costmap_client_->service_is_ready()) {
+    clear_local_costmap_client_->async_send_request(
+      std::make_shared<ClearEntireCostmap::Request>());
+    requested = true;
+  }
+
+  if (requested) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Requested Nav2 costmap clears after attributed safety stop");
+  } else {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Nav2 costmap clear services were unavailable after attributed safety stop");
+  }
 }
 
 void FrontierExplorerNode::publishCompletionEvent()

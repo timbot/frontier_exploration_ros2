@@ -25,6 +25,7 @@ limitations under the License.
 
 #include <geometry_msgs/msg/pose.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/srv/clear_entire_costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -61,6 +62,7 @@ private:
   void costmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void localCostmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void watchdogEventCallback(const std_msgs::msg::String::ConstSharedPtr msg);
+  void clearCostmapsAfterAttributedSafetyStop();
   void publishCompletionEvent();
 
   std::optional<geometry_msgs::msg::Pose> getCurrentPose();
@@ -138,6 +140,10 @@ private:
 
   // ROS interfaces.
   rclcpp_action::Client<NavigateToPose>::SharedPtr navigate_to_pose_client_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
+    clear_global_costmap_client_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
+    clear_local_costmap_client_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Service<srv::ControlExploration>::SharedPtr control_service_;

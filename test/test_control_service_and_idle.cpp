@@ -17,9 +17,12 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <nav2_msgs/srv/clear_entire_costmap.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -679,7 +682,8 @@ protected:
   void create_node(
     bool autostart,
     bool control_service_enabled = true,
-    double map_processing_rate_hz = 1.0)
+    double map_processing_rate_hz = 1.0,
+    int watchdog_collision_stop_block_threshold = 0)
   {
     rclcpp::NodeOptions options;
     options.parameter_overrides({
@@ -688,6 +692,9 @@ protected:
       rclcpp::Parameter("completion_event_enabled", false),
       rclcpp::Parameter("frontier_suppression_enabled", false),
       rclcpp::Parameter("map_processing_rate_hz", map_processing_rate_hz),
+      rclcpp::Parameter(
+        "watchdog_collision_stop_block_threshold",
+        watchdog_collision_stop_block_threshold),
     });
     node_ = std::make_shared<FrontierExplorerNode>(options);
     executor_->add_node(node_);
@@ -939,6 +946,53 @@ TEST_F(FrontierControlNodeTests, StopWithQuitRequestsOnlyExplorerExit)
 
   ASSERT_TRUE(wait_for_condition([this]() { return node_->quitRequested(); }));
   EXPECT_TRUE(rclcpp::ok());
+}
+
+TEST_F(FrontierControlNodeTests, AttributedSafetyStopClearsBothNav2Costmaps)
+{
+  using ClearEntireCostmap = nav2_msgs::srv::ClearEntireCostmap;
+
+  std::atomic<int> global_clear_requests{0};
+  std::atomic<int> local_clear_requests{0};
+  auto global_service = helper_node_->create_service<ClearEntireCostmap>(
+    "/global_costmap/clear_entirely_global_costmap",
+    [&global_clear_requests](
+      const std::shared_ptr<ClearEntireCostmap::Request>,
+      std::shared_ptr<ClearEntireCostmap::Response>)
+    {
+      ++global_clear_requests;
+    });
+  auto local_service = helper_node_->create_service<ClearEntireCostmap>(
+    "/local_costmap/clear_entirely_local_costmap",
+    [&local_clear_requests](
+      const std::shared_ptr<ClearEntireCostmap::Request>,
+      std::shared_ptr<ClearEntireCostmap::Response>)
+    {
+      ++local_clear_requests;
+    });
+
+  create_node(true, true, 1.0, 1);
+  auto watchdog_publisher = helper_node_->create_publisher<std_msgs::msg::String>(
+    "/navigation/watchdog_events",
+    10);
+  ASSERT_TRUE(wait_for_condition(
+    [&watchdog_publisher]() {
+      return watchdog_publisher->get_subscription_count() == 1U;
+    },
+    std::chrono::seconds(2)));
+
+  std_msgs::msg::String event;
+  event.data = R"({"event":"depth_guard_stop","recent_safety_stops":1})";
+
+  ASSERT_TRUE(wait_for_condition(
+    [&watchdog_publisher, &event, &global_clear_requests, &local_clear_requests]() {
+      if (global_clear_requests.load() == 0 || local_clear_requests.load() == 0) {
+        watchdog_publisher->publish(event);
+      }
+      return global_clear_requests.load() > 0 &&
+             local_clear_requests.load() > 0;
+    },
+    std::chrono::seconds(2)));
 }
 
 double yaw_of(const geometry_msgs::msg::Quaternion & q)
