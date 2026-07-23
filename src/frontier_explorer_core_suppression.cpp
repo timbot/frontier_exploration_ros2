@@ -154,6 +154,13 @@ void FrontierExplorerCore::suppress_blocked_frontier_region(
   {
     return;
   }
+  if (bypass_startup_grace) {
+    // An explicitly attributed safety stop is stronger evidence than the
+    // generic startup grace.  Recording the region while leaving filtering
+    // disabled causes the very next scheduler pass to redispatch the blocked
+    // goal and flap until the grace timer expires.
+    frontier_suppression_activation_ns_ = now_ns;
+  }
   FrontierSuppression * suppression = ensure_frontier_suppression();
   if (!suppression) {
     return;
