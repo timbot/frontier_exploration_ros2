@@ -42,6 +42,34 @@ bool attributed_watchdog_stop_requests_frontier_block(
   const std::string & payload,
   int stop_threshold);
 
+enum class AttributedStopDecision
+{
+  IGNORED,
+  RETAIN_GOAL,
+  BLOCK_GOAL,
+};
+
+// Count attributed stops only while this worker owns an active frontier goal.
+// Meaningful action feedback resets the count, so several brief depth holds
+// separated by real route progress cannot be mistaken for a blocked route.
+class FrontierGoalStopTracker
+{
+public:
+  explicit FrontierGoalStopTracker(int stop_threshold = 0);
+
+  void configure(int stop_threshold);
+  void start_goal();
+  bool note_progress(double distance_remaining, double progress_epsilon_m);
+  AttributedStopDecision note_stop(bool active_frontier_goal, bool attributed_stop);
+  [[nodiscard]] int stop_count() const noexcept;
+
+private:
+  int stop_threshold_{0};
+  int stop_count_{0};
+  std::optional<double> distance_at_last_reset_;
+  std::optional<double> best_distance_remaining_;
+};
+
 // Minimal adapter interface that allows core tests to mock action goal handles.
 class GoalHandleInterface
 {

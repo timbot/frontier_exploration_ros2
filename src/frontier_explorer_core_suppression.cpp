@@ -16,6 +16,7 @@ limitations under the License.
 
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <regex>
@@ -49,6 +50,68 @@ bool attributed_watchdog_stop_requests_frontier_block(
     }
   }
   return count >= stop_threshold;
+}
+
+FrontierGoalStopTracker::FrontierGoalStopTracker(int stop_threshold)
+{
+  configure(stop_threshold);
+}
+
+void FrontierGoalStopTracker::configure(int stop_threshold)
+{
+  stop_threshold_ = std::max(0, stop_threshold);
+  start_goal();
+}
+
+void FrontierGoalStopTracker::start_goal()
+{
+  stop_count_ = 0;
+  distance_at_last_reset_.reset();
+  best_distance_remaining_.reset();
+}
+
+bool FrontierGoalStopTracker::note_progress(
+  double distance_remaining,
+  double progress_epsilon_m)
+{
+  if (!std::isfinite(distance_remaining) || !std::isfinite(progress_epsilon_m) ||
+    progress_epsilon_m <= 0.0)
+  {
+    return false;
+  }
+  if (!best_distance_remaining_.has_value()) {
+    best_distance_remaining_ = distance_remaining;
+    distance_at_last_reset_ = distance_remaining;
+    return false;
+  }
+  best_distance_remaining_ = std::min(*best_distance_remaining_, distance_remaining);
+  if (
+    !distance_at_last_reset_.has_value() ||
+    *distance_at_last_reset_ - *best_distance_remaining_ < progress_epsilon_m)
+  {
+    return false;
+  }
+  stop_count_ = 0;
+  distance_at_last_reset_ = *best_distance_remaining_;
+  return true;
+}
+
+AttributedStopDecision FrontierGoalStopTracker::note_stop(
+  bool active_frontier_goal,
+  bool attributed_stop)
+{
+  if (!active_frontier_goal || !attributed_stop || stop_threshold_ <= 0) {
+    return AttributedStopDecision::IGNORED;
+  }
+  ++stop_count_;
+  return stop_count_ >= stop_threshold_ ?
+         AttributedStopDecision::BLOCK_GOAL :
+         AttributedStopDecision::RETAIN_GOAL;
+}
+
+int FrontierGoalStopTracker::stop_count() const noexcept
+{
+  return stop_count_;
 }
 
 bool FrontierExplorerCore::suppression_enabled() const

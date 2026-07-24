@@ -797,6 +797,55 @@ TEST(FrontierSuppressionCoreTests, AttributedStopHonorsConfiguredThreshold)
     R"({"event":"depth_guard_stop","recent_safety_stops":2})", 2));
 }
 
+TEST(FrontierSuppressionCoreTests, AttributedStopsRequireOwnedFrontierGoal)
+{
+  FrontierGoalStopTracker tracker(3);
+
+  EXPECT_EQ(
+    tracker.note_stop(
+      false,
+      attributed_watchdog_stop_requests_frontier_block(
+        R"({"event":"depth_guard_stop","recent_safety_stops":50})", 1)),
+    AttributedStopDecision::IGNORED);
+  EXPECT_EQ(tracker.stop_count(), 0);
+}
+
+TEST(FrontierSuppressionCoreTests, MeaningfulProgressResetsAttributedStopCount)
+{
+  FrontierGoalStopTracker tracker(3);
+  tracker.start_goal();
+  EXPECT_FALSE(tracker.note_progress(2.0, 0.10));
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::RETAIN_GOAL);
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::RETAIN_GOAL);
+  EXPECT_EQ(tracker.stop_count(), 2);
+
+  EXPECT_FALSE(tracker.note_progress(1.96, 0.10));
+  EXPECT_TRUE(tracker.note_progress(1.89, 0.10));
+  EXPECT_EQ(tracker.stop_count(), 0);
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::RETAIN_GOAL);
+}
+
+TEST(FrontierSuppressionCoreTests, ConsecutiveStopsStillBlockOwnedGoal)
+{
+  FrontierGoalStopTracker tracker(3);
+  tracker.start_goal();
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::RETAIN_GOAL);
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::RETAIN_GOAL);
+  EXPECT_EQ(
+    tracker.note_stop(true, true),
+    AttributedStopDecision::BLOCK_GOAL);
+}
+
 TEST(FrontierSuppressionCoreTests, InitialSuppressedPointSurvivesWorkerRestart)
 {
   int64_t now_ns = 0;

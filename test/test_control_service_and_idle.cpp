@@ -987,7 +987,7 @@ TEST_F(FrontierControlNodeTests, StopWithQuitRequestsOnlyExplorerExit)
   EXPECT_TRUE(rclcpp::ok());
 }
 
-TEST_F(FrontierControlNodeTests, AttributedSafetyStopClearsBothNav2Costmaps)
+TEST_F(FrontierControlNodeTests, UnownedSafetyStopDoesNotClearNav2Costmaps)
 {
   using ClearEntireCostmap = nav2_msgs::srv::ClearEntireCostmap;
 
@@ -1023,64 +1023,13 @@ TEST_F(FrontierControlNodeTests, AttributedSafetyStopClearsBothNav2Costmaps)
   std_msgs::msg::String event;
   event.data = R"({"event":"depth_guard_stop","recent_safety_stops":1})";
 
-  ASSERT_TRUE(wait_for_condition(
-    [&watchdog_publisher, &event, &global_clear_requests, &local_clear_requests]() {
-      if (global_clear_requests.load() == 0 || local_clear_requests.load() == 0) {
-        watchdog_publisher->publish(event);
-      }
-      return global_clear_requests.load() > 0 &&
-             local_clear_requests.load() > 0;
-    },
-    std::chrono::seconds(2)));
-}
-
-TEST_F(
-  FrontierControlNodeTests,
-  RollingWatchdogCountRequiresFreshEventsForActiveGoal)
-{
-  using ClearEntireCostmap = nav2_msgs::srv::ClearEntireCostmap;
-
-  std::atomic<int> clear_requests{0};
-  auto global_service = helper_node_->create_service<ClearEntireCostmap>(
-    "/global_costmap/clear_entirely_global_costmap",
-    [&clear_requests](
-      const std::shared_ptr<ClearEntireCostmap::Request>,
-      std::shared_ptr<ClearEntireCostmap::Response>)
-    {
-      ++clear_requests;
-    });
-
-  create_node(true, true, 1.0, 3);
-  auto watchdog_publisher = helper_node_->create_publisher<std_msgs::msg::String>(
-    "/navigation/watchdog_events",
-    10);
-  ASSERT_TRUE(wait_for_condition(
-    [&watchdog_publisher]() {
-      return watchdog_publisher->get_subscription_count() == 1U;
-    },
-    std::chrono::seconds(2)));
-
-  std_msgs::msg::String event;
-  event.data = R"({"event":"depth_guard_stop","recent_safety_stops":99})";
-
-  watchdog_publisher->publish(event);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  executor_->spin_some();
-  EXPECT_EQ(clear_requests.load(), 0);
-
-  watchdog_publisher->publish(event);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  executor_->spin_some();
-  EXPECT_EQ(clear_requests.load(), 0);
-
-  ASSERT_TRUE(wait_for_condition(
-    [&watchdog_publisher, &event, &clear_requests]() {
-      if (clear_requests.load() == 0) {
-        watchdog_publisher->publish(event);
-      }
-      return clear_requests.load() > 0;
-    },
-    std::chrono::seconds(2)));
+  for (int index = 0; index < 5; ++index) {
+    watchdog_publisher->publish(event);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    executor_->spin_some();
+  }
+  EXPECT_EQ(global_clear_requests.load(), 0);
+  EXPECT_EQ(local_clear_requests.load(), 0);
 }
 
 double yaw_of(const geometry_msgs::msg::Quaternion & q)

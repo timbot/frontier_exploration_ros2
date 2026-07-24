@@ -314,6 +314,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   watchdog_collision_stop_block_threshold_ = std::max<int>(
     0,
     this->get_parameter("watchdog_collision_stop_block_threshold").as_int());
+  active_goal_stop_tracker_.configure(
+    watchdog_collision_stop_block_threshold_);
   // Timeout lower bound avoids too-fast timer churn in startup autodetect mode.
 
   navigate_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(
@@ -372,7 +374,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       // Watchdog payload counts describe a rolling time window, not the
       // currently dispatched goal. Count fresh attributed events per goal so
       // a new candidate does not inherit the previous candidate's vetoes.
-      active_goal_attributed_stop_count_ = 0;
+      active_goal_stop_tracker_.start_goal();
       this->dispatchGoalRequest(request);
     };
   callbacks.publish_frontier_markers = [this](const FrontierSequence & frontiers) {
@@ -1248,23 +1250,24 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
     return;
   }
 
-  if (
-    watchdog_collision_stop_block_threshold_ <= 0 ||
-    !attributed_watchdog_stop_requests_frontier_block(msg->data, 1))
+  if (watchdog_collision_stop_block_threshold_ <= 0 ||
+    !core_->active_frontier_goal_in_progress())
   {
     return;
   }
 
-  ++active_goal_attributed_stop_count_;
-  if (
-    active_goal_attributed_stop_count_ <
-    watchdog_collision_stop_block_threshold_)
-  {
+  const auto decision = active_goal_stop_tracker_.note_stop(
+    true,
+    attributed_watchdog_stop_requests_frontier_block(msg->data, 1));
+  if (decision == AttributedStopDecision::IGNORED) {
+    return;
+  }
+  if (decision == AttributedStopDecision::RETAIN_GOAL) {
     RCLCPP_INFO(
       this->get_logger(),
       "Navigation watchdog reported fresh attributed safety stop "
       "(%d/%d for active goal); retaining goal",
-      active_goal_attributed_stop_count_,
+      active_goal_stop_tracker_.stop_count(),
       watchdog_collision_stop_block_threshold_);
     return;
   }
@@ -1273,7 +1276,7 @@ void FrontierExplorerNode::watchdogEventCallback(const std_msgs::msg::String::Co
     this->get_logger(),
     "Navigation watchdog reported fresh attributed safety stops "
     "(%d >= %d for active goal); treating active frontier as blocked: %s",
-    active_goal_attributed_stop_count_,
+    active_goal_stop_tracker_.stop_count(),
     watchdog_collision_stop_block_threshold_,
     msg->data.c_str());
   clearCostmapsAfterAttributedSafetyStop();
@@ -1478,6 +1481,18 @@ void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & reque
     {
       if (!feedback) {
         return;
+      }
+      if (dispatch_id == core_->current_dispatch_id &&
+        core_->active_frontier_goal_in_progress() &&
+        active_goal_stop_tracker_.note_progress(
+          feedback->distance_remaining,
+          params_.frontier_suppression_progress_epsilon_m))
+      {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "Frontier goal made %.2f m meaningful progress; reset attributed "
+          "safety-stop count",
+          params_.frontier_suppression_progress_epsilon_m);
       }
       core_->feedback_callback(feedback->distance_remaining, dispatch_id);
     };
