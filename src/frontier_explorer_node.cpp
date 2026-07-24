@@ -1404,7 +1404,7 @@ void FrontierExplorerNode::publishFrontierMarkers(const FrontierSequence & front
 
 void FrontierExplorerNode::publishSelectedFrontierPose(const geometry_msgs::msg::PoseStamped & pose)
 {
-  if (!debugOutputsEnabled() || !selected_frontier_pub_) {
+  if (!selected_frontier_pub_) {
     return;
   }
   selected_frontier_pub_->publish(pose);

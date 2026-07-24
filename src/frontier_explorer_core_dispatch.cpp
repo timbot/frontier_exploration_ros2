@@ -1155,9 +1155,11 @@ bool FrontierExplorerCore::send_frontier_goal(
     dispatch_sequence.front(),
     current_pose,
     bypass_min_distance_dispatch);
-  if (debug_outputs_enabled()) {
-    callbacks.publish_selected_frontier_pose(goal_pose);
-  }
+  // This one-pose-per-dispatch stream is part of retained goal-lifecycle
+  // evidence, not a high-volume debug product. Keep it available at normal
+  // log level so offline attribution can distinguish candidate generation
+  // from selection and dispatch.
+  callbacks.publish_selected_frontier_pose(goal_pose);
 
   std::string dispatch_description;
   if (dispatch_index != 0U) {

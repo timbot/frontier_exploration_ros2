@@ -700,12 +700,20 @@ TEST(PreemptionFlowTests, DispatchSkipsBlockedFrontierAndUsesNextSequenceTarget)
   core.costmap = OccupancyGrid2d(costmap_msg);
 
   int dispatch_calls = 0;
+  int selected_pose_calls = 0;
   std::optional<GoalDispatchRequest> dispatched_request;
+  std::optional<geometry_msgs::msg::PoseStamped> selected_pose;
+  core.callbacks.debug_outputs_enabled = []() {return false;};
   core.callbacks.wait_for_action_server = [](double) {return true;};
   core.callbacks.dispatch_goal_request = [&dispatch_calls, &dispatched_request](
     const GoalDispatchRequest & request) {
       dispatch_calls += 1;
       dispatched_request = request;
+    };
+  core.callbacks.publish_selected_frontier_pose =
+    [&selected_pose_calls, &selected_pose](const geometry_msgs::msg::PoseStamped & pose) {
+      selected_pose_calls += 1;
+      selected_pose = pose;
     };
 
   const FrontierSequence frontier_sequence{
@@ -717,9 +725,13 @@ TEST(PreemptionFlowTests, DispatchSkipsBlockedFrontierAndUsesNextSequenceTarget)
   EXPECT_TRUE(core.send_frontier_goal(frontier_sequence, make_pose(), "Sending frontier goal"));
 
   ASSERT_EQ(dispatch_calls, 1);
+  ASSERT_EQ(selected_pose_calls, 1);
   ASSERT_TRUE(dispatched_request.has_value());
+  ASSERT_TRUE(selected_pose.has_value());
   EXPECT_NEAR(dispatched_request->goal_pose.pose.position.x, 2.0, 1e-9);
   EXPECT_NEAR(dispatched_request->goal_pose.pose.position.y, 2.0, 1e-9);
+  EXPECT_NEAR(selected_pose->pose.position.x, 2.0, 1e-9);
+  EXPECT_NEAR(selected_pose->pose.position.y, 2.0, 1e-9);
   ASSERT_EQ(dispatched_request->frontier_sequence.size(), 2U);
   EXPECT_TRUE(core.are_frontiers_equivalent(
     dispatched_request->frontier_sequence.front(),
