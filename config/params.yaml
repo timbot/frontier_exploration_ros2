@@ -110,6 +110,11 @@ frontier_explorer:
     # information frontier. Negative disables; escape dispatches bypass it.
     dispatch_min_frontier_progress_m: -1.0
 
+    # Optional fairness layer for repeated mapping loops: if a frontier stays
+    # visible and undispatched for this many seconds, move it to the front of
+    # the next dispatch sequence. Zero disables it.
+    frontier_starvation_prefer_after_s: 0.0
+
     # Skip the active frontier goal if it becomes blocked.
     goal_skip_on_blocked_goal: false
 

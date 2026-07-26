@@ -132,6 +132,7 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("dispatch_costmap_cost_penalty_m", 0.0);
   this->declare_parameter<double>("dispatch_min_frontier_progress_m", -1.0);
   this->declare_parameter<double>("undispatchable_frontier_retry_interval_s", 0.0);
+  this->declare_parameter<double>("frontier_starvation_prefer_after_s", 0.0);
   this->declare_parameter<std::string>("goal_yaw_policy", "path_direction");
   this->declare_parameter<bool>("goal_preemption_enabled", false);
   this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
@@ -226,6 +227,8 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "dispatch_min_frontier_progress_m").as_double();
   params_.undispatchable_frontier_retry_interval_s = this->get_parameter(
     "undispatchable_frontier_retry_interval_s").as_double();
+  params_.frontier_starvation_prefer_after_s = this->get_parameter(
+    "frontier_starvation_prefer_after_s").as_double();
   params_.goal_yaw_policy = this->get_parameter("goal_yaw_policy").as_string();
   params_.goal_preemption_enabled = this->get_parameter(
     "goal_preemption_enabled").as_bool();

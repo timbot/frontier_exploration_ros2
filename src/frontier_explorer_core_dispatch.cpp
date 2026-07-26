@@ -146,6 +146,9 @@ void FrontierExplorerCore::try_send_next_goal()
   }
 
   no_frontiers_reported = false;
+  const int64_t now_ns = callbacks.now_ns();
+  update_frontier_observations(filtered_frontiers, now_ns);
+
   auto selection = select_frontier(filtered_frontiers, *current_pose);
   if (escape_mode_active && selection.frontier.has_value()) {
     selection.mode = "escape";
@@ -170,8 +173,21 @@ void FrontierExplorerCore::try_send_next_goal()
     return;
   }
 
-  const auto sequence_signature = frontier_signature(frontier_sequence);
-  const int64_t now_ns = callbacks.now_ns();
+  bool starvation_prioritized = false;
+  double starvation_age_s = 0.0;
+  const FrontierSequence dispatch_frontier_sequence = escape_mode_active ?
+    frontier_sequence :
+    prioritize_starved_frontier_sequence(
+      frontier_sequence,
+      now_ns,
+      &starvation_prioritized,
+      &starvation_age_s);
+  if (starvation_prioritized && !dispatch_frontier_sequence.empty()) {
+    selection.frontier = dispatch_frontier_sequence.front();
+    selection.mode = "starvation";
+  }
+
+  const auto sequence_signature = frontier_signature(dispatch_frontier_sequence);
   if (
     params.undispatchable_frontier_retry_interval_s > 0.0 &&
     last_undispatchable_frontier_signature.has_value() &&
@@ -186,9 +202,10 @@ void FrontierExplorerCore::try_send_next_goal()
   }
 
   const bool dispatched = send_frontier_goal(
-    frontier_sequence,
+    dispatch_frontier_sequence,
     *current_pose,
-    "Sending frontier goal (" + selection.mode + "): " + describe_frontier(frontier_sequence.front()),
+    "Sending frontier goal (" + selection.mode + "): " +
+    describe_frontier(dispatch_frontier_sequence.front()),
     escape_mode_active);
   if (dispatched) {
     last_undispatchable_frontier_signature.reset();
@@ -227,6 +244,7 @@ void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
   frontier_snapshot.reset();
   raw_frontier_debug_cache.reset();
   mrtsp_order_cache.reset();
+  frontier_observation_states.clear();
   frontier_suppression_.reset();
   frontier_suppression_activation_ns_.reset();
 
@@ -503,6 +521,163 @@ FrontierLike FrontierExplorerCore::frontier_with_goal_point(
   FrontierLike updated_frontier = frontier;
   updated_frontier.goal_point = goal_point;
   return updated_frontier;
+}
+
+FrontierExplorerCore::FrontierObservationKey FrontierExplorerCore::frontier_observation_key(
+  const FrontierLike & frontier) const
+{
+  const auto reference_point = frontier_reference_point(frontier);
+  const double quantum = std::max(0.05, params.frontier_visit_tolerance);
+  return FrontierObservationKey{
+    static_cast<int64_t>(std::llround(reference_point.first / quantum)),
+    static_cast<int64_t>(std::llround(reference_point.second / quantum)),
+  };
+}
+
+void FrontierExplorerCore::update_frontier_observations(
+  const FrontierSequence & frontiers,
+  int64_t now_ns)
+{
+  if (params.frontier_starvation_prefer_after_s <= 0.0) {
+    frontier_observation_states.clear();
+    return;
+  }
+
+  std::vector<FrontierObservationKey> visible_keys;
+  visible_keys.reserve(frontiers.size());
+
+  for (const auto & frontier : frontiers) {
+    const auto key = frontier_observation_key(frontier);
+    visible_keys.push_back(key);
+
+    auto iter = frontier_observation_states.find(key);
+    if (iter == frontier_observation_states.end()) {
+      FrontierObservationState state;
+      state.first_seen_ns = now_ns;
+      state.last_seen_ns = now_ns;
+      frontier_observation_states.emplace(key, state);
+      continue;
+    }
+
+    iter->second.last_seen_ns = now_ns;
+  }
+
+  std::sort(visible_keys.begin(), visible_keys.end());
+  visible_keys.erase(
+    std::unique(visible_keys.begin(), visible_keys.end()),
+    visible_keys.end());
+
+  for (auto iter = frontier_observation_states.begin();
+    iter != frontier_observation_states.end();)
+  {
+    if (!std::binary_search(visible_keys.begin(), visible_keys.end(), iter->first)) {
+      iter = frontier_observation_states.erase(iter);
+    } else {
+      ++iter;
+    }
+  }
+}
+
+FrontierSequence FrontierExplorerCore::prioritize_starved_frontier_sequence(
+  const FrontierSequence & frontier_sequence,
+  int64_t now_ns,
+  bool * prioritized,
+  double * prioritized_age_s)
+{
+  if (prioritized != nullptr) {
+    *prioritized = false;
+  }
+  if (prioritized_age_s != nullptr) {
+    *prioritized_age_s = 0.0;
+  }
+
+  if (
+    params.frontier_starvation_prefer_after_s <= 0.0 ||
+    frontier_sequence.size() < 2U)
+  {
+    return frontier_sequence;
+  }
+
+  std::optional<std::size_t> best_index;
+  int64_t best_first_seen_ns = 0;
+  int best_size = 0;
+  double best_age_s = 0.0;
+
+  for (std::size_t index = 0; index < frontier_sequence.size(); ++index) {
+    const auto key = frontier_observation_key(frontier_sequence[index]);
+    const auto iter = frontier_observation_states.find(key);
+    if (iter == frontier_observation_states.end() || iter->second.dispatch_count > 0) {
+      continue;
+    }
+
+    const double age_s = static_cast<double>(now_ns - iter->second.first_seen_ns) / 1e9;
+    if (age_s + 1e-9 < params.frontier_starvation_prefer_after_s) {
+      continue;
+    }
+
+    const int size = frontier_size(frontier_sequence[index]);
+    if (
+      !best_index.has_value() ||
+      iter->second.first_seen_ns < best_first_seen_ns ||
+      (iter->second.first_seen_ns == best_first_seen_ns && size > best_size))
+    {
+      best_index = index;
+      best_first_seen_ns = iter->second.first_seen_ns;
+      best_size = size;
+      best_age_s = age_s;
+    }
+  }
+
+  if (!best_index.has_value() || *best_index == 0U) {
+    return frontier_sequence;
+  }
+
+  FrontierSequence prioritized_sequence = frontier_sequence;
+  std::rotate(
+    prioritized_sequence.begin(),
+    prioritized_sequence.begin() + static_cast<std::ptrdiff_t>(*best_index),
+    prioritized_sequence.begin() + static_cast<std::ptrdiff_t>(*best_index + 1U));
+
+  if (prioritized != nullptr) {
+    *prioritized = true;
+  }
+  if (prioritized_age_s != nullptr) {
+    *prioritized_age_s = best_age_s;
+  }
+
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(1)
+      << "Prioritizing old undispatched frontier: age=" << best_age_s
+      << "s, threshold=" << params.frontier_starvation_prefer_after_s
+      << "s; " << describe_frontier(prioritized_sequence.front());
+  callbacks.log_info(oss.str());
+
+  return prioritized_sequence;
+}
+
+void FrontierExplorerCore::note_frontier_dispatched(
+  const FrontierLike & frontier,
+  int64_t now_ns)
+{
+  if (params.frontier_starvation_prefer_after_s <= 0.0) {
+    return;
+  }
+
+  const auto key = frontier_observation_key(frontier);
+  auto iter = frontier_observation_states.find(key);
+  if (iter == frontier_observation_states.end()) {
+    FrontierObservationState state;
+    state.first_seen_ns = now_ns;
+    state.last_seen_ns = now_ns;
+    state.dispatch_count = 1;
+    state.last_dispatched_ns = now_ns;
+    frontier_observation_states.emplace(key, state);
+    return;
+  }
+
+  iter->second.dispatch_count += 1;
+  iter->second.last_dispatched_ns = now_ns;
+  iter->second.last_seen_ns = now_ns;
 }
 
 std::optional<double> FrontierExplorerCore::active_goal_visible_reveal_length() const
@@ -1174,12 +1349,16 @@ bool FrontierExplorerCore::send_frontier_goal(
     dispatch_description = description;
   }
   // Frontier mode dispatches only the first element from the selected sequence.
-  return send_pose_goal(
+  const bool dispatched = send_pose_goal(
     goal_pose,
     "frontier",
     dispatch_sequence.front(),
     dispatch_sequence,
     dispatch_description);
+  if (dispatched) {
+    note_frontier_dispatched(dispatch_sequence.front(), callbacks.now_ns());
+  }
+  return dispatched;
 }
 
 std::string FrontierExplorerCore::describe_dispatch_probe(

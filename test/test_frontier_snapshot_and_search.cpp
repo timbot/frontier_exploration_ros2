@@ -781,6 +781,84 @@ TEST(FrontierSelectionTests, SelectFrontierSequenceReturnsFullMrtspOrdering)
   EXPECT_TRUE(core->are_frontiers_equivalent(frontier_sequence.front(), *selection.frontier));
 }
 
+TEST(FrontierSelectionTests, StarvationPreferenceMovesOldUndispatchedFrontierToFront)
+{
+  auto core = make_snapshot_core();
+  core->params.frontier_starvation_prefer_after_s = 5.0;
+
+  const auto nearby_frontier = make_frontier(1.0, 0.0, 2);
+  const auto old_frontier = make_frontier(5.0, 0.0, 8);
+  const FrontierSequence ordered_sequence{nearby_frontier, old_frontier};
+
+  core->update_frontier_observations(ordered_sequence, 0);
+
+  bool prioritized = false;
+  double prioritized_age_s = 0.0;
+  const auto before_threshold = core->prioritize_starved_frontier_sequence(
+    ordered_sequence,
+    4'000'000'000,
+    &prioritized,
+    &prioritized_age_s);
+  EXPECT_FALSE(prioritized);
+  EXPECT_TRUE(core->are_frontiers_equivalent(before_threshold.front(), nearby_frontier));
+
+  const auto after_threshold = core->prioritize_starved_frontier_sequence(
+    ordered_sequence,
+    6'000'000'000,
+    &prioritized,
+    &prioritized_age_s);
+  ASSERT_TRUE(prioritized);
+  EXPECT_DOUBLE_EQ(prioritized_age_s, 6.0);
+  EXPECT_TRUE(core->are_frontiers_equivalent(after_threshold.front(), old_frontier));
+  EXPECT_TRUE(core->are_frontiers_equivalent(after_threshold[1], nearby_frontier));
+}
+
+TEST(FrontierSelectionTests, StarvationPreferenceDoesNotReprioritizeDispatchedReference)
+{
+  auto core = make_snapshot_core();
+  core->params.frontier_starvation_prefer_after_s = 5.0;
+
+  const auto nearby_frontier = make_frontier(1.0, 0.0, 2);
+  const auto old_frontier = make_frontier(5.0, 0.0, 8);
+  const FrontierSequence ordered_sequence{nearby_frontier, old_frontier};
+
+  core->update_frontier_observations({old_frontier}, 0);
+  core->note_frontier_dispatched(old_frontier, 1'000'000'000);
+
+  bool prioritized = false;
+  const auto prioritized_sequence = core->prioritize_starved_frontier_sequence(
+    ordered_sequence,
+    10'000'000'000,
+    &prioritized);
+
+  EXPECT_FALSE(prioritized);
+  EXPECT_TRUE(core->are_frontiers_equivalent(prioritized_sequence.front(), nearby_frontier));
+}
+
+TEST(FrontierSelectionTests, StarvationObservationUsesFrontierReferenceNotGoalPoint)
+{
+  auto core = make_snapshot_core();
+  core->params.frontier_starvation_prefer_after_s = 5.0;
+
+  const auto nearby_frontier = make_frontier(1.0, 0.0, 2);
+  auto old_frontier = make_frontier(5.0, 0.0, 8);
+  auto adjusted_goal_frontier = old_frontier;
+  adjusted_goal_frontier.goal_point = {4.5, 0.0};
+  const FrontierSequence ordered_sequence{nearby_frontier, adjusted_goal_frontier};
+
+  core->update_frontier_observations({old_frontier}, 0);
+
+  bool prioritized = false;
+  const auto prioritized_sequence = core->prioritize_starved_frontier_sequence(
+    ordered_sequence,
+    6'000'000'000,
+    &prioritized);
+
+  ASSERT_TRUE(prioritized);
+  EXPECT_EQ(prioritized_sequence.front().centroid, adjusted_goal_frontier.centroid);
+  EXPECT_EQ(prioritized_sequence.front().goal_point, adjusted_goal_frontier.goal_point);
+}
+
 TEST(FrontierSelectionTests, BuildGoalPoseFacesTargetWhenLookAheadUnavailable)
 {
   auto core = make_snapshot_core();

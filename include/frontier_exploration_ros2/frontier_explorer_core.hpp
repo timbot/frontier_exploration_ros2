@@ -16,8 +16,10 @@ limitations under the License.
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -146,6 +148,12 @@ struct FrontierExplorerCoreParams
   // Bound repeated resolver work when map and costmap callbacks expose the
   // same frontier sequence but none of its endpoints is dispatchable.
   double undispatchable_frontier_retry_interval_s{0.0};
+  // When positive, a frontier that remains visible and undispatched for at
+  // least this long is moved to the front of the next dispatch sequence. This
+  // is deliberately zone-neutral: it prevents old useful openings from being
+  // starved by repeatedly better local MRTSP residuals without bypassing the
+  // normal safety and dispatchability checks.
+  double frontier_starvation_prefer_after_s{0.0};
   // Arrival heading for dispatched goals. "path_direction" (default) faces
   // travel direction; "face_frontier" faces the frontier reference from
   // the dispatch point, so a forward-facing depth camera arrives already
@@ -379,6 +387,17 @@ public:
     const geometry_msgs::msg::Pose & current_pose,
     const std::string & description,
     bool bypass_min_distance_dispatch = false);
+  FrontierSequence prioritize_starved_frontier_sequence(
+    const FrontierSequence & frontier_sequence,
+    int64_t now_ns,
+    bool * prioritized = nullptr,
+    double * prioritized_age_s = nullptr);
+  void update_frontier_observations(
+    const FrontierSequence & frontiers,
+    int64_t now_ns);
+  void note_frontier_dispatched(
+    const FrontierLike & frontier,
+    int64_t now_ns);
 
   void dispatch_goal_request(
     const std::string & action_name,
@@ -513,6 +532,16 @@ public:
   std::optional<FrontierSignature> last_undispatchable_frontier_signature;
   std::optional<int64_t> last_undispatchable_frontier_attempt_ns;
 
+  using FrontierObservationKey = std::array<int64_t, 2>;
+  struct FrontierObservationState
+  {
+    int64_t first_seen_ns{0};
+    int64_t last_seen_ns{0};
+    int dispatch_count{0};
+    std::optional<int64_t> last_dispatched_ns;
+  };
+  std::map<FrontierObservationKey, FrontierObservationState> frontier_observation_states;
+
   // Post-goal settle and map-refresh gating state.
   bool awaiting_map_refresh{false};
   bool post_goal_settle_active{false};
@@ -599,6 +628,7 @@ private:
   void note_active_goal_euclidean_progress(int64_t now_ns);
   bool active_goal_euclidean_progress_recent(int64_t now_ns) const;
   void reset_exploration_runtime_state(bool clear_maps);
+  FrontierObservationKey frontier_observation_key(const FrontierLike & frontier) const;
 
   std::optional<DispatchContext> dispatch_context_for(int dispatch_id) const;
 };

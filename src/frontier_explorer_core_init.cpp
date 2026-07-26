@@ -88,6 +88,9 @@ FrontierExplorerCore::FrontierExplorerCore(
   params.undispatchable_frontier_retry_interval_s = std::max(
     0.0,
     params.undispatchable_frontier_retry_interval_s);
+  params.frontier_starvation_prefer_after_s = std::max(
+    0.0,
+    params.frontier_starvation_prefer_after_s);
   params.connected_retarget_min_interval_s = std::max(
     0.0,
     params.connected_retarget_min_interval_s);
