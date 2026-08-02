@@ -17,14 +17,91 @@ limitations under the License.
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
 
 namespace frontier_exploration_ros2
 {
+namespace
+{
+
+std::optional<std::string> extract_json_string_field(
+  const std::string & payload,
+  const std::string & key)
+{
+  const std::regex pattern(
+    "\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+  std::smatch match;
+  if (!std::regex_search(payload, match, pattern) || match.size() < 2) {
+    return std::nullopt;
+  }
+  return match[1].str();
+}
+
+int extract_watchdog_stop_count(const std::string & payload)
+{
+  const std::regex count_pattern(
+    "\"(recent_safety_stops|recent_collision_stops)\"\\s*:\\s*([0-9]+)");
+  std::smatch match;
+  if (!std::regex_search(payload, match, count_pattern) || match.size() < 3) {
+    return 1;
+  }
+  try {
+    return std::stoi(match[2].str());
+  } catch (const std::exception &) {
+    return 1;
+  }
+}
+
+std::optional<bool> extract_json_bool_field(
+  const std::string & payload,
+  const std::string & key)
+{
+  const std::regex pattern("\"" + key + "\"\\s*:\\s*(true|false)");
+  std::smatch match;
+  if (!std::regex_search(payload, match, pattern) || match.size() < 2) {
+    return std::nullopt;
+  }
+  return match[1].str() == "true";
+}
+
+std::string normalize_guard_reason(const std::string & reason)
+{
+  std::string normalized;
+  bool pending_space = false;
+  for (const unsigned char ch : reason) {
+    if (std::isspace(ch)) {
+      pending_space = !normalized.empty();
+      continue;
+    }
+    if (pending_space) {
+      normalized.push_back(' ');
+      pending_space = false;
+    }
+    normalized.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return normalized;
+}
+
+bool depth_guard_reason_is_obstacle(const std::optional<std::string> & reason)
+{
+  if (!reason.has_value()) {
+    return false;
+  }
+  const std::string normalized = normalize_guard_reason(*reason);
+  return normalized == "projected depth obstacle" ||
+    normalized == "persisted projected depth obstacle" ||
+    normalized == "projected depth rotation obstacle" ||
+    normalized == "persisted projected depth rotation obstacle" ||
+    normalized == "raw depth obstacle";
+}
+
+}  // namespace
 
 bool attributed_watchdog_stop_requests_frontier_block(
   const std::string & payload,
@@ -33,23 +110,24 @@ bool attributed_watchdog_stop_requests_frontier_block(
   if (stop_threshold <= 0) {
     return false;
   }
-  const std::regex event_pattern(
-    "\"event\"\\s*:\\s*\"(collision_stop|depth_guard_stop)\"");
-  if (!std::regex_search(payload, event_pattern)) {
+  const auto event = extract_json_string_field(payload, "event");
+  if (!event.has_value()) {
     return false;
   }
-  const std::regex count_pattern(
-    "\"(recent_safety_stops|recent_collision_stops)\"\\s*:\\s*([0-9]+)");
-  std::smatch match;
-  int count = 1;
-  if (std::regex_search(payload, match, count_pattern) && match.size() >= 3) {
-    try {
-      count = std::stoi(match[2].str());
-    } catch (const std::exception &) {
-      count = 1;
-    }
+  if (*event == "collision_stop") {
+    return extract_watchdog_stop_count(payload) >= stop_threshold;
   }
-  return count >= stop_threshold;
+  if (*event != "depth_guard_stop") {
+    return false;
+  }
+  const auto obstacle_field = extract_json_bool_field(payload, "guard_reason_obstacle");
+  if (obstacle_field.has_value()) {
+    return *obstacle_field && extract_watchdog_stop_count(payload) >= stop_threshold;
+  }
+  const bool obstacle_reason =
+    depth_guard_reason_is_obstacle(extract_json_string_field(payload, "guard_reason")) ||
+    depth_guard_reason_is_obstacle(extract_json_string_field(payload, "reason"));
+  return obstacle_reason && extract_watchdog_stop_count(payload) >= stop_threshold;
 }
 
 FrontierGoalStopTracker::FrontierGoalStopTracker(int stop_threshold)

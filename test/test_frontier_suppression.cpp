@@ -780,7 +780,55 @@ TEST(FrontierSuppressionCoreTests, AttributedCollisionStopRequestsFrontierBlock)
 TEST(FrontierSuppressionCoreTests, AttributedDepthStopRequestsFrontierBlock)
 {
   EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
-    R"({"event":"depth_guard_stop","recent_safety_stops":1})", 1));
+    R"({"event":"depth_guard_stop","guard_reason":"projected depth obstacle","recent_safety_stops":1})",
+    1));
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"persisted projected depth obstacle","recent_safety_stops":1})",
+    1));
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"projected depth rotation obstacle","recent_safety_stops":1})",
+    1));
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"persisted projected depth rotation obstacle","recent_safety_stops":1})",
+    1));
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"raw depth obstacle","recent_safety_stops":1})",
+    1));
+}
+
+TEST(FrontierSuppressionCoreTests, NonObstacleDepthStopsNeverRequestFrontierBlock)
+{
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"angular reversal waiting for stable stopped base","recent_safety_stops":50})",
+    1));
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"ready","recent_safety_stops":50})",
+    1));
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"command timeout","recent_safety_stops":50})",
+    1));
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"no command received","recent_safety_stops":50})",
+    1));
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason":"depth stale","recent_safety_stops":50})",
+    1));
+}
+
+TEST(FrontierSuppressionCoreTests, DepthStopObstacleFlagControlsFrontierBlock)
+{
+  EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason_obstacle":true,"guard_reason":"ready","recent_safety_stops":1})",
+    1));
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","guard_reason_obstacle":false,"guard_reason":"projected depth obstacle","recent_safety_stops":50})",
+    1));
+}
+
+TEST(FrontierSuppressionCoreTests, DepthStopsWithoutExactReasonDoNotBlockFrontiers)
+{
+  EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
+    R"({"event":"depth_guard_stop","recent_safety_stops":50})", 1));
 }
 
 TEST(FrontierSuppressionCoreTests, UnknownStopNeverRequestsFrontierBlock)
@@ -792,9 +840,11 @@ TEST(FrontierSuppressionCoreTests, UnknownStopNeverRequestsFrontierBlock)
 TEST(FrontierSuppressionCoreTests, AttributedStopHonorsConfiguredThreshold)
 {
   EXPECT_FALSE(attributed_watchdog_stop_requests_frontier_block(
-    R"({"event":"depth_guard_stop","recent_safety_stops":1})", 2));
+    R"({"event":"depth_guard_stop","guard_reason":"projected depth obstacle","recent_safety_stops":1})",
+    2));
   EXPECT_TRUE(attributed_watchdog_stop_requests_frontier_block(
-    R"({"event":"depth_guard_stop","recent_safety_stops":2})", 2));
+    R"({"event":"depth_guard_stop","guard_reason":"projected depth obstacle","recent_safety_stops":2})",
+    2));
 }
 
 TEST(FrontierSuppressionCoreTests, AttributedStopsRequireOwnedFrontierGoal)
@@ -805,7 +855,8 @@ TEST(FrontierSuppressionCoreTests, AttributedStopsRequireOwnedFrontierGoal)
     tracker.note_stop(
       false,
       attributed_watchdog_stop_requests_frontier_block(
-        R"({"event":"depth_guard_stop","recent_safety_stops":50})", 1)),
+        R"({"event":"depth_guard_stop","guard_reason":"projected depth obstacle","recent_safety_stops":50})",
+        1)),
     AttributedStopDecision::IGNORED);
   EXPECT_EQ(tracker.stop_count(), 0);
 }
